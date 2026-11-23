@@ -313,6 +313,37 @@ a { color: var(--accent-ink); }
 }
 .chip.add .ico { width: 15px; height: 15px; }
 
+/* '+ 폴더' — 칩 목록 아래 별도 행 */
+.folder-tools {
+  display: flex;
+  margin-top: 8px;
+}
+.folder-manage {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+.folder-manage .ico { width: 15px; height: 15px; }
+.folder-manage:active {
+  transform: scale(0.985);
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
 /* ---------- quick capture (상단 빠른 입력) ---------- */
 .quick-capture {
   display: flex;
@@ -1368,8 +1399,9 @@ textarea.input {
 .mini-btn.danger:active { color: var(--danger); }
 .mini-btn:disabled { opacity: 0.28; }
 
-.folder-add { display: flex; gap: 7px; margin-top: 12px; }
+.folder-add { display: flex; gap: 7px; margin: 2px 0 14px; }
 .folder-add .input { flex: 1; }
+.folder-add .btn { flex: none; }
 
 .palette {
   margin-top: 11px;
@@ -1552,6 +1584,7 @@ textarea.input {
   .item-area { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
   .app, .topbar-inner { padding-left: 20px; padding-right: 20px; }
   .folder-bar { padding-left: 20px; padding-right: 20px; margin: 0 -20px; scroll-padding-left: 20px; }
+  .folder-manage { flex: 0 0 auto; padding: 0 16px; }
   .brand h1 { font-size: 19.5px; }
   .sheet-panel { border-radius: 26px 26px 0 0; }
   .toasts { bottom: calc(96px + var(--safe-b)); }

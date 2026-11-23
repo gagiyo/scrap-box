@@ -1,5 +1,5 @@
 /* 스크랩박스 서비스 워커 — 앱 껄데기는 캐시하고, 스크랩 데이터는 IndexedDB에만 둔다. */
-const CACHE = 'scrapbox-shell-v1';
+const CACHE = 'scrapbox-shell-v2';
 const SHELL = [
   './',
   './index.html',

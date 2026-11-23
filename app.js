@@ -795,7 +795,7 @@ var previewTimer = null;
 var previewAbort = null;
 
 function cacheUI() {
-  ['searchInput', 'searchClear', 'quickCapture', 'quickInput', 'folderBar', 'itemArea', 'viewTitle', 'viewCount',
+  ['searchInput', 'searchClear', 'quickCapture', 'quickInput', 'folderBar', 'btnFolderManage', 'itemArea', 'viewTitle', 'viewCount',
     'typeSeg', 'btnView', 'viewIcon', 'viewIconUse', 'btnBundle', 'btnSelect', 'btnQuickAdd', 'btnSettings', 'fab', 'topbar',
     'selectionBar', 'selCount', 'selCopy', 'selMove', 'selDelete', 'selCancel', 'toasts',
     'addSheet', 'addHeading', 'addTypeSeg', 'addUrl', 'btnPasteUrl', 'previewCard',
@@ -860,8 +860,6 @@ function folderChipsHTML() {
     out.push(chipHTML(f.id, f.name, f.emoji || '📁', counts[f.id] || 0, f.color));
   });
 
-  out.push('<button type="button" class="chip add" data-folder-manage aria-label="폴더 관리">' +
-    '<svg class="ico"><use href="#i-plus"/></svg>폴더</button>');
   return out.join('');
 }
 
@@ -2674,6 +2672,9 @@ function wireEvents() {
     var chip = e.target.closest('[data-folder]');
     if (chip) setFolder(chip.getAttribute('data-folder'));
   });
+
+  // '+ 폴더' 칸은 폴더 목록 밖 별도 행에 있다.
+  if (ui.btnFolderManage) ui.btnFolderManage.addEventListener('click', openFolderSheet);
 
   ui.searchInput.addEventListener('input', function () {
     if (searchTimer) clearTimeout(searchTimer);
