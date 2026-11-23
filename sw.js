@@ -44,10 +44,11 @@ self.addEventListener('fetch', function (event) {
   try { url = new URL(request.url); } catch (e) { return; }
   if (url.origin !== self.location.origin) return; // 미리보기·썸네일 같은 외부 요청은 그대로 통과
 
-  // 화면: 네트워크 우선, 실패하면 캐시된 index.html
+  // 화면: 네트워크 우선(HTTP 캐시도 건너뛰어 항상 새 index.html), 실패하면 캐시된 index.html
+  // (GitHub Pages가 html을 10분간 캐시하라고 보내므로, 새로 올린 화면이 바로 뜨게 한다.)
   if (request.mode === 'navigate') {
     event.respondWith(
-      fetch(request)
+      fetch(request, { cache: 'no-store' })
         .then(function (response) {
           if (response && response.ok) {
             const copy = response.clone();
