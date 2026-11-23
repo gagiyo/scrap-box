@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko" data-theme="light">
+<html lang="ko" data-theme="light" data-shell="3">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -17,7 +17,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="스크랩박스">
 <meta name="format-detection" content="telephone=no">
-<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./styles.css?v=3">
 <script>
 (function () {
   try {
@@ -89,11 +89,6 @@
       </div>
 
       <nav class="folder-bar" id="folderBar" aria-label="폴더"></nav>
-      <div class="folder-tools">
-        <button type="button" class="folder-manage" id="btnFolderManage" data-folder-manage aria-haspopup="dialog" aria-label="폴더 관리">
-          <svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg><span>폴더</span>
-        </button>
-      </div>
     </div>
   </header>
 
@@ -387,6 +382,27 @@
   </div>
 </section>
 
-<script src="./app.js"></script>
+<script src="./app.js?v=3"></script>
+<script>
+/* 껍데기 버전 자가 복구: 새 index.html에 옛 app.js(서비스워커 캐시)가 붙어
+   버튼이 안 먹거나 두 번 뜨는 일을 막는다. 버전이 다르면 캐시를 비우고 한 번만 새로 연다. */
+(function () {
+  try {
+    var want = document.documentElement.getAttribute('data-shell');
+    if (!want || window.SCRAPBOX_SHELL_VERSION === want) return;
+    var KEY = 'scrapbox_shell_reload';
+    if (sessionStorage.getItem(KEY) === want) return; // 반복 방지
+    sessionStorage.setItem(KEY, want);
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        regs.forEach(function (r) { r.unregister(); });
+        location.reload();
+      }).catch(function () { location.reload(); });
+      return;
+    }
+    location.reload();
+  } catch (e) { /* noop */ }
+})();
+</script>
 </body>
 </html>

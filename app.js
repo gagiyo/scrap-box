@@ -9,6 +9,13 @@
 var APP_ID = 'scrap-box';
 var BACKUP_VERSION = 1;
 
+/* 화면 껍데기(index.html)와 스크립트·스타일 버전이 어긋나면(서비스워커 캐시 등)
+   섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
+   한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
+   data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
+var SHELL_VERSION = '3';
+if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
+
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
 var TYPE_EMOJI = { link: '🔗', image: '🖼️', memo: '📝' };
 
@@ -795,7 +802,7 @@ var previewTimer = null;
 var previewAbort = null;
 
 function cacheUI() {
-  ['searchInput', 'searchClear', 'quickCapture', 'quickInput', 'folderBar', 'btnFolderManage', 'itemArea', 'viewTitle', 'viewCount',
+  ['searchInput', 'searchClear', 'quickCapture', 'quickInput', 'folderBar', 'itemArea', 'viewTitle', 'viewCount',
     'typeSeg', 'btnView', 'viewIcon', 'viewIconUse', 'btnBundle', 'btnSelect', 'btnQuickAdd', 'btnSettings', 'fab', 'topbar',
     'selectionBar', 'selCount', 'selCopy', 'selMove', 'selDelete', 'selCancel', 'toasts',
     'addSheet', 'addHeading', 'addTypeSeg', 'addUrl', 'btnPasteUrl', 'previewCard',
@@ -852,6 +859,11 @@ function currentFolder() {
 function folderChipsHTML() {
   var counts = countByFolder(state.items);
   var out = [];
+
+  // '+ 폴더' 칩은 목록 맨 앞에 둔다 (스크롤 없이 바로 보이게).
+  out.push('<button type="button" class="chip add" data-folder-manage aria-haspopup="dialog" aria-label="폴더 관리">' +
+    '<svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>' +
+    '<span>폴더</span></button>');
 
   out.push(chipHTML('all', '전체', '', counts.all || 0));
   out.push(chipHTML('fav', '즐겨찾기', '★', counts.fav || 0));
@@ -2672,9 +2684,6 @@ function wireEvents() {
     var chip = e.target.closest('[data-folder]');
     if (chip) setFolder(chip.getAttribute('data-folder'));
   });
-
-  // '+ 폴더' 칸은 폴더 목록 밖 별도 행에 있다.
-  if (ui.btnFolderManage) ui.btnFolderManage.addEventListener('click', openFolderSheet);
 
   ui.searchInput.addEventListener('input', function () {
     if (searchTimer) clearTimeout(searchTimer);
