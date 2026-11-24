@@ -1615,23 +1615,31 @@ function firstText(list) {
 }
 
 /** 차단·오류 페이지가 돌려준 제목은 미리보기로 쓰지 않는다. */
-var PREVIEW_JUNK_TITLE = /^(access denied|forbidden|attention required|just a moment|error code:? *\d+|4\d\d (forbidden|not found)|service unavailable|오류가 발생|접근이 거부|접속이 차단)/i;
+var PREVIEW_JUNK_TITLE = /^(access denied|sorry!?[, ]*access denied|forbidden|attention required|just a moment|error code:? *\d+|4\d\d (forbidden|not found)|service unavailable|오류가 발생|접근이 거부|접속이 차단|권한이 없습니다)/i;
+var PREVIEW_JUNK_DESC = /(access denied|you don'?t have permission|접근할 수 있는 권한이 없습니다|접속이 차단되었습니다|자동화된 요청)/i;
+
+/* 사이트 이름(og:site_name)이 없을 때도 흔히 붙는 꼬리표는 떼어 낸다. */
+var KNOWN_TITLE_SUFFIX = ['네이버 블로그', '네이버 뉴스', '네이버 카페', '네이버 포스트', '티스토리', 'youtube', '인스타그램'];
 
 /** "제목 : 사이트이름" 처럼 사이트 이름이 꼬리에 붙은 것만 떼어 낸다(제목 자체는 건드리지 않는다). */
 function cleanPreviewTitle(raw, site) {
   var s = String(raw == null ? '' : raw).replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
   var st = String(site == null ? '' : site).replace(/\s+/g, ' ').trim().toLowerCase();
-  if (st) {
+  var names = st ? [st] : KNOWN_TITLE_SUFFIX;
+  var seps = [' : ', ' :: ', ' | ', ' - ', ' · ', ' — '];
+  for (var n = 0; n < names.length; n++) {
     var lower = s.toLowerCase();
-    var seps = [' : ', ' :: ', ' | ', ' - ', ' · ', ' — '];
+    var stripped = false;
     for (var i = 0; i < seps.length; i++) {
-      var suffix = seps[i] + st;
+      var suffix = seps[i] + names[n];
       if (lower.length > suffix.length + 2 && lower.slice(-suffix.length) === suffix) {
         s = s.slice(0, s.length - suffix.length).trim();
+        stripped = true;
         break;
       }
     }
+    if (stripped) break;
   }
   return s;
 }
@@ -1639,7 +1647,7 @@ function cleanPreviewTitle(raw, site) {
 function cleanPreviewDesc(raw) {
   var s = oneLine(raw, 400);
   if (!s) return '';
-  if (/^(access denied|forbidden|you don't have permission|error code)/i.test(s)) return '';
+  if (PREVIEW_JUNK_DESC.test(s)) return '';
   return s;
 }
 
