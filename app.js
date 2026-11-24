@@ -13,7 +13,7 @@ var BACKUP_VERSION = 1;
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '5';
+var SHELL_VERSION = '6';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -791,6 +791,8 @@ var state = {
   addImages: [],
   addPreview: null,
   addPreviewFor: '',
+  autoTitle: '',
+  autoMemo: '',
   addExistingThumb: '',
   paletteFolderId: null,
   ready: false
@@ -1171,6 +1173,8 @@ function resetAddForm() {
   state.addImages = [];
   state.addPreview = null;
   state.addPreviewFor = '';
+  state.autoTitle = '';
+  state.autoMemo = '';
   state.addExistingThumb = '';
   state.addFolderId = 'inbox';
 
@@ -1543,9 +1547,12 @@ function showPreview(p, loading) {
 function schedulePreview() {
   if (previewTimer) clearTimeout(previewTimer);
   var raw = ui.addUrl.value.trim();
-  if (!raw) { hidePreview(); return; }
+  if (!raw) { clearAutoFilled(); hidePreview(); return; }
   var n = normalizeUrl(raw);
   if (!n.ok) { hidePreview(); return; }
+  // 주소를 다른 링크로 바꿨으면, 앞 링크에서 자동으로 채운 제목·메모는 지운다
+  // (사용자가 직접 고쳐 놓은 값은 건드리지 않는다)
+  if (state.addPreviewFor && state.addPreviewFor !== n.url) clearAutoFilled();
   if (state.addPreviewFor === n.url && state.addPreview) {
     showPreview(state.addPreview);
     return;
@@ -1768,73 +1775,81 @@ function finalizePreview(res, pageUrl) {
 var PREVIEW_YT_RE = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([\w-]{6,})/i;
 
 /** URL에 맞는 시도 순서. 각 단계는 스스로 시간을 끊고, 실패하면 다음 단계로 넘어간다. */
+function stepCorsEu() {
+  return { label: 'cors.eu.org', timeout: 7000, html: true, url: function (u) { return 'https://cors.eu.org/' + u; } };
+}
+
+function stepJinaHtml() {
+  return {
+    label: 'jina-html', timeout: 9000, html: true,
+    headers: { 'X-Return-Format': 'html' },
+    url: function (u) { return 'https://r.jina.ai/' + u; }
+  };
+}
+
+function stepAllorigins() {
+  return {
+    label: 'allorigins', timeout: 2500, html: true,
+    url: function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
+  };
+}
+
+function stepCodetabs() {
+  return {
+    label: 'codetabs', timeout: 2000, html: true,
+    url: function (u) { return 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u); }
+  };
+}
+
+function stepMicrolink() {
+  return {
+    label: 'microlink', timeout: 13000,
+    url: function (u) { return 'https://api.microlink.io/?url=' + encodeURIComponent(u) + '&meta=true'; },
+    parse: function (v) {
+      var j = previewJson(v);
+      if (!j || j.status !== 'success' || !j.data) return null;
+      var d = j.data;
+      return {
+        title: d.title || '',
+        desc: d.description || '',
+        thumb: (d.image && d.image.url) || '',
+        site: d.publisher || d.siteName || ''
+      };
+    }
+  };
+}
+
+function stepNoembed() {
+  return {
+    label: 'noembed', timeout: 5000,
+    url: function (u) { return 'https://noembed.com/embed?url=' + encodeURIComponent(u); },
+    parse: function (v) {
+      var d = previewJson(v);
+      if (!d || d.error) return null;
+      return { title: d.title || '', desc: d.author_name || '', thumb: d.thumbnail_url || '', site: d.provider_name || '' };
+    }
+  };
+}
+
+function stepYouTubeOembed() {
+  return {
+    label: 'youtube-oembed', timeout: 5000,
+    url: function (u) { return 'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(u); },
+    parse: function (v) {
+      var d = previewJson(v);
+      if (!d || !d.title) return null;
+      return { title: d.title, desc: d.author_name || '', thumb: d.thumbnail_url || '', site: 'YouTube' };
+    }
+  };
+}
+
+/** URL에 맞는 시도 순서. 각 단계는 스스로 시간을 끊고, 실패하면 다음 단계로 넘어간다. */
 function buildPreviewSteps(url) {
   if (PREVIEW_YT_RE.test(url)) {
-    return [{
-      label: 'youtube-oembed',
-      timeout: 6000,
-      url: function (u) { return 'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(u); },
-      parse: function (v) {
-        var d = previewJson(v);
-        if (!d || !d.title) return null;
-        return { title: d.title, desc: d.author_name || '', thumb: d.thumbnail_url || '', site: 'YouTube' };
-      }
-    }];
+    // 유튜브 oEmbed는 브라우저에서 가끔 응답이 멈춘다. noembed(같은 내용)와 HTML 파싱을 이어 붙인다.
+    return [stepYouTubeOembed(), stepNoembed(), stepJinaHtml(), stepCorsEu(), stepMicrolink()];
   }
-
-  return [
-    {
-      label: 'cors.eu.org',
-      timeout: 7000,
-      html: true,
-      url: function (u) { return 'https://cors.eu.org/' + u; }
-    },
-    {
-      label: 'jina-html',
-      timeout: 9000,
-      html: true,
-      headers: { 'X-Return-Format': 'html' },
-      url: function (u) { return 'https://r.jina.ai/' + u; }
-    },
-    {
-      label: 'allorigins',
-      timeout: 2500,
-      html: true,
-      url: function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
-    },
-    {
-      label: 'codetabs',
-      timeout: 2000,
-      html: true,
-      url: function (u) { return 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u); }
-    },
-    {
-      label: 'microlink',
-      timeout: 13000,
-      url: function (u) { return 'https://api.microlink.io/?url=' + encodeURIComponent(u) + '&meta=true'; },
-      parse: function (v) {
-        var j = previewJson(v);
-        if (!j || j.status !== 'success' || !j.data) return null;
-        var d = j.data;
-        return {
-          title: d.title || '',
-          desc: d.description || '',
-          thumb: (d.image && d.image.url) || '',
-          site: d.publisher || d.siteName || ''
-        };
-      }
-    },
-    {
-      label: 'noembed',
-      timeout: 4000,
-      url: function (u) { return 'https://noembed.com/embed?url=' + encodeURIComponent(u); },
-      parse: function (v) {
-        var d = previewJson(v);
-        if (!d || d.error) return null;
-        return { title: d.title || '', desc: d.author_name || '', thumb: d.thumbnail_url || '', site: d.provider_name || '' };
-      }
-    }
-  ];
+  return [stepCorsEu(), stepJinaHtml(), stepAllorigins(), stepCodetabs(), stepMicrolink(), stepNoembed()];
 }
 
 function runPreviewSteps(steps, url, signal, deadline) {
@@ -1893,14 +1908,31 @@ function writePreviewCache(url, res) {
 
 var previewSeq = 0;
 
+function clearAutoFilled() {
+  if (state.autoTitle && ui.addTitleInput.value.trim() === state.autoTitle) ui.addTitleInput.value = '';
+  if (state.autoMemo && ui.addMemo.value.trim() === state.autoMemo) {
+    ui.addMemo.value = '';
+    updateMemoCount();
+  }
+  state.autoTitle = '';
+  state.autoMemo = '';
+  state.addPreview = null;
+  state.addPreviewFor = '';
+}
+
+/** 자동으로 채운 값은 따로 적어 둔다. 주소가 바뀔 때 이 값만 지우기 위해서다. */
 function applyPreviewToForm(res, url) {
   state.addPreview = res;
   state.addPreviewFor = url;
   showPreview(res);
   ui.previewHint.textContent = '제목·메모는 직접 고쳐도 돼요.';
-  if (!ui.addTitleInput.value.trim() && res.title) ui.addTitleInput.value = truncate(res.title, 120);
+  if (!ui.addTitleInput.value.trim() && res.title) {
+    ui.addTitleInput.value = truncate(res.title, 120);
+    state.autoTitle = ui.addTitleInput.value.trim();
+  }
   if (!ui.addMemo.value.trim() && res.desc) {
     ui.addMemo.value = truncate(oneLine(res.desc, 200), 200);
+    state.autoMemo = ui.addMemo.value.trim();
     updateMemoCount();
   }
 }
