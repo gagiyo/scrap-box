@@ -13,7 +13,7 @@ var BACKUP_VERSION = 1;
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '4';
+var SHELL_VERSION = '5';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -1570,7 +1570,7 @@ function schedulePreview() {
    · r.jina.ai — 원문을 막는 사이트(네이버 블로그 등)도 렌더링한 HTML을 준다(확인).
    · noembed.com — 일반 웹페이지는 지원하지 않아 마지막 안전망으로만 쓴다. */
 
-var PREVIEW_BUDGET_MS = 22000;
+var PREVIEW_BUDGET_MS = 16000;
 var PREVIEW_CACHE_KEY = 'scrapbox_preview_cache_v1';
 var PREVIEW_CACHE_TTL = 7 * 86400000;
 var PREVIEW_CACHE_MAX = 150;
@@ -1798,13 +1798,13 @@ function buildPreviewSteps(url) {
     },
     {
       label: 'allorigins',
-      timeout: 3500,
+      timeout: 2500,
       html: true,
       url: function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
     },
     {
       label: 'codetabs',
-      timeout: 3000,
+      timeout: 2000,
       html: true,
       url: function (u) { return 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u); }
     },

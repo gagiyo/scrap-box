@@ -1,12 +1,12 @@
 /* 스크랩박스 서비스 워커 — 앱 껄데기는 캐시하고, 스크랩 데이터는 IndexedDB에만 둔다.
    껄데기(index.html·css·js)는 네트워크 우선으로 받아, 새 index.html에 옛 css/js가
    섞이는 일을 막는다. 오프라인일 때만 캐시로 대신한다. */
-const CACHE = 'scrapbox-shell-v4';
+const CACHE = 'scrapbox-shell-v5';
 const SHELL = [
   './',
   './index.html',
-  './styles.css?v=4',
-  './app.js?v=4',
+  './styles.css?v=5',
+  './app.js?v=5',
   './manifest.json',
   './icon-180.png',
   './icon-192.png',
