@@ -13,7 +13,7 @@ var BACKUP_VERSION = 1;
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '3';
+var SHELL_VERSION = '4';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -1559,46 +1559,253 @@ function schedulePreview() {
   previewTimer = setTimeout(function () { fetchPreviewInto(n); }, 600);
 }
 
-function previewTimeout(promise, ms) {
-  return new Promise(function (resolve) {
+/* ------------------------------------------------------------- preview fetch */
+
+/* 링크 미리보기는 정적 GitHub Pages 앱이라 브라우저가 외부 사이트를 직접 부른다.
+   대부분의 사이트는 CORS를 열어주지 않으므로 '대신 받아 주는' 경로를 거친 뒤 받은 HTML에서
+   og/twitter 메타를 직접 파싱한다. 순서는 2026-11-24 실제 호출로 확인해 정했다.
+   · api.microlink.io — 무료 한도가 하루 5회(x-rate-limit-limit: 5)라 1순위에서 내렸다.
+   · api.allorigins.win · api.codetabs.com — 자주 5xx(522)로 죽어 있어 뒤쪽에만 둔다.
+   · cors.eu.org — 국내 뉴스·공공기관 페이지의 원문 HTML을 1~5초에 준다(확인).
+   · r.jina.ai — 원문을 막는 사이트(네이버 블로그 등)도 렌더링한 HTML을 준다(확인).
+   · noembed.com — 일반 웹페이지는 지원하지 않아 마지막 안전망으로만 쓴다. */
+
+var PREVIEW_BUDGET_MS = 22000;
+var PREVIEW_CACHE_KEY = 'scrapbox_preview_cache_v1';
+var PREVIEW_CACHE_TTL = 7 * 86400000;
+var PREVIEW_CACHE_MAX = 150;
+
+/** 응답 바이트를 charset 선언(헤더 → <meta charset>)대로 풀고, 깨지면 utf-8/euc-kr을 견줘 고른다. */
+function decodeBufferText(buf, contentType) {
+  if (!buf || !buf.byteLength) return '';
+  var bytes = new Uint8Array(buf);
+  var charset = '';
+  var m = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType || '');
+  if (m) charset = m[1].toLowerCase();
+  if (!charset) {
+    var probe = '';
+    // 바이트를 그대로 1:1로 읽을 수 있는 latin1로 앞부분만 훔쳐 <meta charset>을 찾는다
+    try { probe = new TextDecoder('latin1').decode(bytes.subarray(0, 4096)); } catch (e) { probe = ''; }
+    var m2 = /<meta[^>]+charset\s*=\s*["']?([\w-]+)/i.exec(probe);
+    if (m2) charset = m2[1].toLowerCase();
+  }
+
+  var labels = [];
+  [charset, 'utf-8', 'euc-kr'].forEach(function (label) {
+    if (label && labels.indexOf(label) === -1) labels.push(label);
+  });
+
+  var best = '';
+  var bestBad = Infinity;
+  labels.forEach(function (label) {
+    var text;
+    try { text = new TextDecoder(label).decode(bytes); } catch (e) { return; }
+    var bad = (text.match(/\uFFFD/g) || []).length;
+    if (bad < bestBad) { bestBad = bad; best = text; }
+  });
+  return best;
+}
+
+function firstText(list) {
+  for (var i = 0; i < (list || []).length; i++) {
+    var v = list[i];
+    if (v != null && String(v).trim()) return String(v);
+  }
+  return '';
+}
+
+/** 차단·오류 페이지가 돌려준 제목은 미리보기로 쓰지 않는다. */
+var PREVIEW_JUNK_TITLE = /^(access denied|forbidden|attention required|just a moment|error code:? *\d+|4\d\d (forbidden|not found)|service unavailable|오류가 발생|접근이 거부|접속이 차단)/i;
+
+/** "제목 : 사이트이름" 처럼 사이트 이름이 꼬리에 붙은 것만 떼어 낸다(제목 자체는 건드리지 않는다). */
+function cleanPreviewTitle(raw, site) {
+  var s = String(raw == null ? '' : raw).replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  var st = String(site == null ? '' : site).replace(/\s+/g, ' ').trim().toLowerCase();
+  if (st) {
+    var lower = s.toLowerCase();
+    var seps = [' : ', ' :: ', ' | ', ' - ', ' · ', ' — '];
+    for (var i = 0; i < seps.length; i++) {
+      var suffix = seps[i] + st;
+      if (lower.length > suffix.length + 2 && lower.slice(-suffix.length) === suffix) {
+        s = s.slice(0, s.length - suffix.length).trim();
+        break;
+      }
+    }
+  }
+  return s;
+}
+
+function cleanPreviewDesc(raw) {
+  var s = oneLine(raw, 400);
+  if (!s) return '';
+  if (/^(access denied|forbidden|you don't have permission|error code)/i.test(s)) return '';
+  return s;
+}
+
+/** og:image 같은 상대 주소를 절대 주소로. https 화면에서 http 이미지는 차단되므로 올려 본다. */
+function resolvePreviewImage(ref, pageUrl) {
+  var s = String(ref == null ? '' : ref).trim();
+  if (!s || /^(data|blob|javascript):/i.test(s)) return '';
+  try {
+    var u = new URL(s, pageUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    if (u.protocol === 'http:' && /^https:/i.test(String(pageUrl))) u.protocol = 'https:';
+    return u.href;
+  } catch (e) { return ''; }
+}
+
+/** 받은 HTML에서 제목·설명·썸네일·사이트 이름을 뽑는다. 메타는 <head>에 있으므로 앞부분만 파싱한다. */
+function parseMetaFromHTML(html, pageUrl) {
+  if (!html || typeof html !== 'string') return null;
+  var slice = html.length > 300000 ? html.slice(0, 300000) : html;
+  var doc = null;
+  try { doc = new DOMParser().parseFromString(slice, 'text/html'); } catch (e) { doc = null; }
+  if (!doc) return null;
+
+  var meta = {};
+  var nodes = doc.querySelectorAll('meta');
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    var key = String(n.getAttribute('property') || n.getAttribute('name') || n.getAttribute('itemprop') || '')
+      .trim().toLowerCase();
+    if (!key || meta[key] != null) continue;
+    var content = n.getAttribute('content');
+    if (content == null) continue;
+    var val = String(content).replace(/\s+/g, ' ').trim();
+    if (val) meta[key] = val;
+  }
+
+  var site = firstText([meta['og:site_name'], meta['application-name'], meta['apple-mobile-web-app-title']]);
+  var title = firstText([meta['og:title'], meta['twitter:title'], meta['title'], doc.title]);
+  var desc = firstText([meta['og:description'], meta['twitter:description'], meta['description'], meta['summary']]);
+  var img = firstText([meta['og:image:secure_url'], meta['og:image'], meta['og:image:url'],
+    meta['twitter:image'], meta['twitter:image:src'], meta['thumbnailurl']]);
+
+  if (!img) {
+    var link = doc.querySelector('link[rel~="image_src"]');
+    if (link) img = link.getAttribute('href') || '';
+  }
+
+  site = cleanPreviewTitle(site, '');
+  title = cleanPreviewTitle(title, site);
+  if (!title) return null;
+  if (title.length < 60 && PREVIEW_JUNK_TITLE.test(title)) return null;
+
+  return {
+    title: truncate(title, 160),
+    desc: truncate(cleanPreviewDesc(desc), 300),
+    thumb: resolvePreviewImage(img, pageUrl),
+    site: truncate(site, 40)
+  };
+}
+
+function previewJson(v) {
+  try { return JSON.parse(decodeBufferText(v.buf, v.contentType)); } catch (e) { return null; }
+}
+
+/** fetch 한 번. 시간 제한과 (새 요청이 들어오면) 바깥 abort를 함께 지킨다. */
+function requestRaw(url, ms, opts) {
+  var o = opts || {};
+  return new Promise(function (resolve, reject) {
+    if (o.signal && o.signal.aborted) { reject(new Error('aborted')); return; }
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
     var done = false;
-    var t = setTimeout(function () { if (!done) { done = true; resolve(null); } }, ms);
-    promise.then(function (v) {
+
+    function finish(err, val) {
       if (done) return;
       done = true;
-      clearTimeout(t);
-      resolve(v);
-    }).catch(function () {
-      if (done) return;
-      done = true;
-      clearTimeout(t);
-      resolve(null);
-    });
+      clearTimeout(timer);
+      if (o.signal) { try { o.signal.removeEventListener('abort', onAbort); } catch (e) { /* noop */ } }
+      if (err) reject(err); else resolve(val);
+    }
+    function onAbort() { if (ctrl) { try { ctrl.abort(); } catch (e) { /* noop */ } } finish(new Error('aborted')); }
+
+    var timer = setTimeout(function () {
+      if (ctrl) { try { ctrl.abort(); } catch (e) { /* noop */ } }
+      finish(new Error('timeout'));
+    }, ms);
+    if (o.signal) o.signal.addEventListener('abort', onAbort);
+
+    fetch(url, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      signal: ctrl ? ctrl.signal : undefined,
+      headers: o.headers || undefined
+    }).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      var ct = r.headers.get('content-type') || '';
+      return r.arrayBuffer().then(function (buf) {
+        return { buf: buf, contentType: ct, status: r.status };
+      });
+    }).then(function (v) { finish(null, v); }).catch(function (e) { finish(e); });
   });
 }
 
-var previewSeq = 0;
+/** 받은 값이 쓸 만한지 다듬어 표준 모양 {title, desc, thumb, site}로 돌려준다. */
+function finalizePreview(res, pageUrl) {
+  if (!res) return null;
+  var title = cleanPreviewTitle(res.title, res.site || '');
+  if (!title) return null;
+  if (title.length < 60 && PREVIEW_JUNK_TITLE.test(title)) return null;
+  return {
+    title: truncate(title, 160),
+    desc: truncate(cleanPreviewDesc(res.desc), 300),
+    thumb: resolvePreviewImage(res.thumb, pageUrl),
+    site: truncate(cleanPreviewTitle(res.site, ''), 40)
+  };
+}
 
-function fetchPreviewInto(n) {
-  var seq = ++previewSeq;
-  if (previewAbort) { try { previewAbort.abort(); } catch (e) { /* noop */ } }
-  previewAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-  var signal = previewAbort ? previewAbort.signal : undefined;
-  var url = n.url;
+var PREVIEW_YT_RE = /(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([\w-]{6,})/i;
 
-  var yt = url.match(/(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([\w-]{6,})/i);
-  var job;
-  if (yt && yt[1]) {
-    job = fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(url), { signal: signal })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
+/** URL에 맞는 시도 순서. 각 단계는 스스로 시간을 끊고, 실패하면 다음 단계로 넘어간다. */
+function buildPreviewSteps(url) {
+  if (PREVIEW_YT_RE.test(url)) {
+    return [{
+      label: 'youtube-oembed',
+      timeout: 6000,
+      url: function (u) { return 'https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(u); },
+      parse: function (v) {
+        var d = previewJson(v);
         if (!d || !d.title) return null;
         return { title: d.title, desc: d.author_name || '', thumb: d.thumbnail_url || '', site: 'YouTube' };
-      });
-  } else {
-    job = fetch('https://api.microlink.io/?url=' + encodeURIComponent(url) + '&meta=true', { signal: signal })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) {
+      }
+    }];
+  }
+
+  return [
+    {
+      label: 'cors.eu.org',
+      timeout: 7000,
+      html: true,
+      url: function (u) { return 'https://cors.eu.org/' + u; }
+    },
+    {
+      label: 'jina-html',
+      timeout: 9000,
+      html: true,
+      headers: { 'X-Return-Format': 'html' },
+      url: function (u) { return 'https://r.jina.ai/' + u; }
+    },
+    {
+      label: 'allorigins',
+      timeout: 3500,
+      html: true,
+      url: function (u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }
+    },
+    {
+      label: 'codetabs',
+      timeout: 3000,
+      html: true,
+      url: function (u) { return 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u); }
+    },
+    {
+      label: 'microlink',
+      timeout: 13000,
+      url: function (u) { return 'https://api.microlink.io/?url=' + encodeURIComponent(u) + '&meta=true'; },
+      parse: function (v) {
+        var j = previewJson(v);
         if (!j || j.status !== 'success' || !j.data) return null;
         var d = j.data;
         return {
@@ -1607,48 +1814,116 @@ function fetchPreviewInto(n) {
           thumb: (d.image && d.image.url) || '',
           site: d.publisher || d.siteName || ''
         };
-      });
-  }
-
-  previewTimeout(job, 8000).then(function (res) {
-    if (!res) {
-      return noembedPreview(url, signal);
+      }
+    },
+    {
+      label: 'noembed',
+      timeout: 4000,
+      url: function (u) { return 'https://noembed.com/embed?url=' + encodeURIComponent(u); },
+      parse: function (v) {
+        var d = previewJson(v);
+        if (!d || d.error) return null;
+        return { title: d.title || '', desc: d.author_name || '', thumb: d.thumbnail_url || '', site: d.provider_name || '' };
+      }
     }
-    return res;
-  }).then(function (res) {
+  ];
+}
+
+function runPreviewSteps(steps, url, signal, deadline) {
+  var i = 0;
+  function next() {
+    if (i >= steps.length) return Promise.resolve(null);
+    if (signal && signal.aborted) return Promise.resolve(null);
+    var remain = deadline - Date.now();
+    if (remain < 1200) return Promise.resolve(null);
+    var step = steps[i++];
+    return requestRaw(step.url(url), Math.min(step.timeout, remain), { headers: step.headers, signal: signal })
+      .then(function (v) {
+        var res = step.html
+          ? parseMetaFromHTML(decodeBufferText(v.buf, v.contentType), url)
+          : step.parse(v);
+        var fixed = finalizePreview(res, url);
+        return fixed ? fixed : next();
+      })
+      .catch(function () { return next(); });
+  }
+  return next();
+}
+
+function previewCacheAll() {
+  try {
+    var raw = localStorage.getItem(PREVIEW_CACHE_KEY);
+    if (!raw) return {};
+    var obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch (e) { return {}; }
+}
+
+function readPreviewCache(url) {
+  var hit = previewCacheAll()[url];
+  if (!hit || !hit.at || !hit.res || !hit.res.title) return null;
+  if (Date.now() - hit.at > PREVIEW_CACHE_TTL) return null;
+  return hit.res;
+}
+
+function writePreviewCache(url, res) {
+  if (!url || !res || !res.title) return;
+  try {
+    var all = previewCacheAll();
+    all[url] = {
+      at: Date.now(),
+      res: { title: res.title, desc: res.desc || '', thumb: res.thumb || '', site: res.site || '' }
+    };
+    var keys = Object.keys(all);
+    if (keys.length > PREVIEW_CACHE_MAX) {
+      keys.sort(function (a, b) { return (all[a].at || 0) - (all[b].at || 0); });
+      keys.slice(0, keys.length - PREVIEW_CACHE_MAX).forEach(function (k) { delete all[k]; });
+    }
+    localStorage.setItem(PREVIEW_CACHE_KEY, JSON.stringify(all));
+  } catch (e) { /* 저장 공간이 없으면 캐시는 포기하고 매번 새로 받는다 */ }
+}
+
+var previewSeq = 0;
+
+function applyPreviewToForm(res, url) {
+  state.addPreview = res;
+  state.addPreviewFor = url;
+  showPreview(res);
+  ui.previewHint.textContent = '제목·메모는 직접 고쳐도 돼요.';
+  if (!ui.addTitleInput.value.trim() && res.title) ui.addTitleInput.value = truncate(res.title, 120);
+  if (!ui.addMemo.value.trim() && res.desc) {
+    ui.addMemo.value = truncate(oneLine(res.desc, 200), 200);
+    updateMemoCount();
+  }
+}
+
+function fetchPreviewInto(n) {
+  var seq = ++previewSeq;
+  if (previewAbort) { try { previewAbort.abort(); } catch (e) { /* noop */ } }
+  previewAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var signal = previewAbort ? previewAbort.signal : undefined;
+  var url = n.url;
+
+  var cached = readPreviewCache(url);
+  if (cached) { applyPreviewToForm(cached, url); return; }
+
+  showPreview(null, true);
+  var deadline = Date.now() + PREVIEW_BUDGET_MS;
+
+  runPreviewSteps(buildPreviewSteps(url), url, signal, deadline).then(function (res) {
     if (seq !== previewSeq) return; // 더 새로운 요청이 있으면 무시
-    if (state.addPreviewFor === url && !res) { hidePreview(); return; }
     if (!res) {
       hidePreview();
       ui.previewHint.textContent = '미리보기를 가져오지 못했어요. 제목을 직접 적어 주세요.';
       return;
     }
-    state.addPreview = res;
-    state.addPreviewFor = url;
-    if (state.addType !== 'link' || state.editingId) { /* 미리보기만 보관 */ }
-    showPreview(res);
-    ui.previewHint.textContent = '제목·메모는 직접 고쳐도 돼요.';
-    if (!ui.addTitleInput.value.trim() && res.title) ui.addTitleInput.value = truncate(res.title, 120);
-    if (!ui.addMemo.value.trim() && res.desc) {
-      ui.addMemo.value = truncate(oneLine(res.desc, 200), 200);
-      updateMemoCount();
-    }
+    writePreviewCache(url, res);
+    applyPreviewToForm(res, url);
+  }).catch(function () {
+    if (seq !== previewSeq) return;
+    hidePreview();
+    ui.previewHint.textContent = '미리보기를 가져오지 못했어요. 제목을 직접 적어 주세요.';
   });
-}
-
-function noembedPreview(url, signal) {
-  return fetch('https://noembed.com/embed?url=' + encodeURIComponent(url), { signal: signal })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (d) {
-      if (!d || d.error) return null;
-      return {
-        title: d.title || '',
-        desc: d.author_name || '',
-        thumb: d.thumbnail_url || '',
-        site: d.provider_name || ''
-      };
-    })
-    .catch(function () { return null; });
 }
 
 /* ---------------------------------------------------------------- clipboard */
