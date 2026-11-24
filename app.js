@@ -13,7 +13,7 @@ var BACKUP_VERSION = 1;
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '6';
+var SHELL_VERSION = '7';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -1577,7 +1577,7 @@ function schedulePreview() {
    · r.jina.ai — 원문을 막는 사이트(네이버 블로그 등)도 렌더링한 HTML을 준다(확인).
    · noembed.com — 일반 웹페이지는 지원하지 않아 마지막 안전망으로만 쓴다. */
 
-var PREVIEW_BUDGET_MS = 16000;
+var PREVIEW_BUDGET_MS = 18000;
 var PREVIEW_CACHE_KEY = 'scrapbox_preview_cache_v1';
 var PREVIEW_CACHE_TTL = 7 * 86400000;
 var PREVIEW_CACHE_MAX = 150;
@@ -1846,30 +1846,46 @@ function stepYouTubeOembed() {
 /** URL에 맞는 시도 순서. 각 단계는 스스로 시간을 끊고, 실패하면 다음 단계로 넘어간다. */
 function buildPreviewSteps(url) {
   if (PREVIEW_YT_RE.test(url)) {
-    // 유튜브 oEmbed는 브라우저에서 가끔 응답이 멈춘다. noembed(같은 내용)와 HTML 파싱을 이어 붙인다.
-    return [stepYouTubeOembed(), stepNoembed(), stepJinaHtml(), stepCorsEu(), stepMicrolink()];
+    // 유튜브 oEmbed는 브라우저에서 가끔 응답이 멈춘다. 같은 내용을 주는 noembed를 먼저 두고
+    // oEmbed·HTML 파싱을 뒤에 붙인다.
+    return [stepNoembed(), stepYouTubeOembed(), stepJinaHtml(), stepCorsEu(), stepMicrolink()];
   }
   return [stepCorsEu(), stepJinaHtml(), stepAllorigins(), stepCodetabs(), stepMicrolink(), stepNoembed()];
 }
 
 function runPreviewSteps(steps, url, signal, deadline) {
   var i = 0;
-  function next() {
-    if (i >= steps.length) return Promise.resolve(null);
-    if (signal && signal.aborted) return Promise.resolve(null);
+  var retried = {};
+
+  function attempt(step) {
     var remain = deadline - Date.now();
     if (remain < 1200) return Promise.resolve(null);
-    var step = steps[i++];
     return requestRaw(step.url(url), Math.min(step.timeout, remain), { headers: step.headers, signal: signal })
       .then(function (v) {
         var res = step.html
           ? parseMetaFromHTML(decodeBufferText(v.buf, v.contentType), url)
           : step.parse(v);
-        var fixed = finalizePreview(res, url);
-        return fixed ? fixed : next();
-      })
-      .catch(function () { return next(); });
+        return finalizePreview(res, url);
+      }, function (err) {
+        // 앱을 한동안 안 쓰다 처음 부른 서버는 연결을 맺는 단계에서 멈추는 일이 있다.
+        // 같은 요청을 한 번 더 보내면 곧바로 응답하는 것을 확인해, 타임아웃만 한 번 재시도한다.
+        var isTimeout = String((err && err.message) || err).indexOf('timeout') !== -1;
+        if (isTimeout && !retried[step.label] && deadline - Date.now() > 2500) {
+          retried[step.label] = 1;
+          return attempt(step);
+        }
+        return null;
+      });
   }
+
+  function next() {
+    if (i >= steps.length) return Promise.resolve(null);
+    if (signal && signal.aborted) return Promise.resolve(null);
+    if (deadline - Date.now() < 1200) return Promise.resolve(null);
+    var step = steps[i++];
+    return attempt(step).then(function (res) { return res || next(); });
+  }
+
   return next();
 }
 
