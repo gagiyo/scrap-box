@@ -753,7 +753,7 @@ function validateBackup(raw) {
     var type = (it.type === 'link' || it.type === 'image' || it.type === 'memo') ? it.type
       : (it.url ? 'link' : (it.image ? 'image' : 'memo'));
     var title = oneLine(it.title, 300);
-    var memo = typeof it.memo === 'string' ? it.memo.slice(0, 2000) : '';
+    var memo = typeof it.memo === 'string' ? it.memo.slice(0, 20000) : '';
     var url = '';
     if (typeof it.url === 'string' && it.url) {
       var n = normalizeUrl(it.url);
@@ -1404,7 +1404,7 @@ function toggleFavorite(id) {
 /* ---------------------------------------------------------------- add form */
 
 function updateMemoCount() {
-  if (ui.memoCount && ui.addMemo) ui.memoCount.textContent = ui.addMemo.value.length + ' / 2000';
+  if (ui.memoCount && ui.addMemo) ui.memoCount.textContent = ui.addMemo.value.length + ' / 20000';
 }
 
 function resetAddForm() {
