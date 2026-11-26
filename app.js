@@ -13,7 +13,7 @@ var BACKUP_VERSION = 2;
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '9';
+var SHELL_VERSION = '10';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -138,15 +138,55 @@ function domainOf(url) {
 }
 
 /* 공유 글이 "… https://youtu.be/abc 입니다"처럼 주소 뒤에 조사·문장부호를 붙여 보내는 일이 잦다.
-   주소 끝에서 떼어 볼 꼬리표(문장부호 → 한글·전각문자 순서로 반복해 다듬는다). */
+   주소 끝에서 떼어 볼 꼬리표(문장부호 → 기호·이모지 → 한글 조사 순서로 반복해 다듬는다). */
 var URL_TAIL_PUNCT = /[.,;:!?)\]}>'"”’»…]+$/;
-var URL_TAIL_NON_ASCII = /[^\x21-\x7e]+$/;
+/* 주소 뒤에 흔히 붙는 기호·이모지. 한글·한자·가나는 주소 경로 자체일 수 있으므로 건드리지 않는다. */
+var URL_TAIL_MARKS = /[\u2000-\u206f\u2100-\u27bf\u3000-\u303f\ufe30-\ufe4f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]+$/;
+/* 이모지처럼 두 칸(서로게이트 짝)을 쓰는 글자 */
+var URL_TAIL_EMOJI = /(?:[\ud800-\udbff][\udc00-\udfff])+$/;
+
+/* 주소 끝에 붙어 온 한글 조사. 긴 것부터 대 본다('입니다'를 '이'보다 먼저). */
+var URL_TAIL_PARTICLES = [
+  '이었습니다', '였습니다', '이랍니다', '이지만', '이라고요',
+  '에서부터', '으로부터', '에서는', '으로는', '에서도', '으로도', '에서의', '으로의',
+  '이에요', '이네요', '이라고', '이라는', '이라도', '이라서', '이라면', '에서요', '으로요',
+  '예요', '이란', '이랑', '라고', '라는', '라도', '라서', '라면', '부터', '까지', '에서', '에게', '한테', '으로', '로써', '로서', '보다', '이다',
+  '입니다', '이죠', '이요',
+  '은', '는', '이', '가', '을', '를', '에', '의', '도', '만', '와', '과', '로', '요', '야', '여', '께', '죠'
+].sort(function (a, b) { return b.length - a.length; });
+
+/* 주소를 덜어 내고 나면 조사만 남는 글("… https://youtu.be/abc 입니다")은 메모로 치지 않는다. */
+var MEMO_PARTICLE_ONLY = /^(?:이었습니다|였습니다|이랍니다|이에요|이네요|이죠|이요|네요|이라고|라고|이라|이다|입니다|예요|요)$/;
+/* 글자·숫자 없이 문장부호만 남은 메모("…/a/b)" → ")")도 메모로 치지 않는다. */
+var MEMO_HAS_WORD = /[0-9A-Za-z\u00c0-\uffff]/;
+
+/* 주소 끝의 조사 한 토막을 떼어 낸다. 주소 경로가 한글인 경우(…/wiki/서울)를 지키려고
+   앞 글자가 영문·숫자일 때만 한 글자 조사(…/abc에)까지 떼고,
+   앞 글자가 한글이면 두 글자 이상인 조사(…/서울에서)만 뗀다. */
+function stripTrailingParticle(s) {
+  var t = String(s == null ? '' : s);
+  for (var n = 0; n < 3; n++) {
+    var cut = '';
+    for (var i = 0; i < URL_TAIL_PARTICLES.length; i++) {
+      var p = URL_TAIL_PARTICLES[i];
+      if (t.length <= p.length) continue;
+      if (t.slice(-p.length) !== p) continue;
+      var prev = t.charAt(t.length - p.length - 1);
+      if (/[0-9A-Za-z]/.test(prev)) { cut = p; break; }
+      if (/[\uac00-\ud7a3]/.test(prev) && p.length >= 2) { cut = p; break; }
+    }
+    if (!cut) break;
+    t = t.slice(0, t.length - cut.length);
+  }
+  return t;
+}
 
 function trimUrlTail(raw) {
   var s = String(raw == null ? '' : raw);
   for (var i = 0; i < 6; i++) {
     var before = s;
-    s = s.replace(URL_TAIL_PUNCT, '').replace(URL_TAIL_NON_ASCII, '');
+    s = s.replace(URL_TAIL_PUNCT, '').replace(URL_TAIL_MARKS, '').replace(URL_TAIL_EMOJI, '');
+    s = stripTrailingParticle(s);
     if (s === before) break;
   }
   return s;
@@ -163,12 +203,15 @@ function findUrl(text) {
   if (!m) return null;
   var raw0 = m[0];
   // 다듬은 후보를 먼저 본다: 안드로이드 공유 글의 "…/abc입니다" 같은 꼬리를 떼어 내기 위해서다.
-  var candidates = [trimUrlTail(raw0), raw0.replace(/[.,;:!?)\]}'"]+$/, '')];
+  // 주소 경로가 한글인 경우(…/wiki/서울)는 조사만 떼므로 다듬어도 그대로 남는다.
+  var trimmed = trimUrlTail(raw0);
+  var candidates = trimmed === raw0 ? [raw0] : [trimmed, raw0.replace(URL_TAIL_PUNCT, '')];
   for (var i = 0; i < candidates.length; i++) {
     var raw = candidates[i];
     if (!raw) continue;
     var n = normalizeUrl(raw);
-    if (n.ok) return { url: n.url, domain: n.domain, raw: raw };
+    // raw는 글에서 덜어 낼 때 쓰므로, 다듬기 전에 글에서 잡힌 그대로를 돌려준다.
+    if (n.ok) return { url: n.url, domain: n.domain, raw: raw0 };
   }
   return null;
 }
@@ -179,6 +222,25 @@ function stripUrlsFromText(text) {
     .replace(/https?:\/\/[^\s<>"')\]]+/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** 두 글이 '같은 내용'인지 — 공백·대소문자 차이를 무시하고, 한쪽이 다른 쪽을 담고 있으면 같다고 본다.
+    제목 없이 "영상 제목 https://…" 로만 공유된 글의 메모와, 미리보기가 나중에 채운 제목이
+    같은 내용일 때 메모를 비우는 데 쓴다. */
+function sameLooseText(a, b) {
+  function canon(v) {
+    return String(v == null ? '' : v)
+      .replace(/[\u200b-\u200d\ufeff]/g, '')
+      .replace(/[\s\u00a0]+/g, '')
+      .toLowerCase();
+  }
+  var x = canon(a), y = canon(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  var shorter = x.length <= y.length ? x : y;
+  var longer = x.length <= y.length ? y : x;
+  // 너무 짧은 글이 우연히 겹쳐 사용자가 적은 메모를 지우지 않도록 네 글자부터 본다
+  return shorter.length >= 4 && longer.indexOf(shorter) !== -1;
 }
 
 /** 어떤 앱은 주소를 한 번 더 인코딩해 보낸다(https%3A%2F%2F…). 그때만 한 번 풀어 준다. */
@@ -252,8 +314,10 @@ function parseQueryParams(search) {
     if (out.url) {
       // 주소는 이미 링크 칸에 있으니 본문에서는 모두 덜어 내고, 제목과 겹치는 글도 버린다.
       var memo = stripUrlsFromText(rawText);
-      if (memo && title && memo === title) memo = '';
+      if (memo && title && sameLooseText(memo, title)) memo = '';
       if (memo && memo === out.url) memo = '';
+      // "…/abc 입니다"처럼 주소 뒤에 따로 떨어진 조사나 문장부호만 남는 경우는 메모로 치지 않는다
+      if (memo && (MEMO_PARTICLE_ONLY.test(memo) || !MEMO_HAS_WORD.test(memo))) memo = '';
       if (memo) out.memo = memo;
     } else {
       out.type = 'memo';
@@ -2231,11 +2295,21 @@ function applyPreviewToForm(res, url) {
   showPreview(res);
   hidePreviewNote();
   ui.previewHint.textContent = '제목·메모는 직접 고쳐도 돼요.';
+  // 제목 없이 "영상 제목 https://…" 로만 공유돼 메모에 남은 글이, 미리보기가 받아온 제목과
+  // 같은 내용이면 중복이므로 그냥 비운다(설명으로 다시 채우지도 않는다 — 공유한 사람이 적은 것이 없다는 뜻).
+  var memoNow = ui.addMemo.value.trim();
+  var droppedDupMemo = false;
+  if (memoNow && res.title && sameLooseText(memoNow, res.title)) {
+    ui.addMemo.value = '';
+    if (state.autoMemo === memoNow) state.autoMemo = '';
+    updateMemoCount();
+    droppedDupMemo = true;
+  }
   if (!ui.addTitleInput.value.trim() && res.title) {
     ui.addTitleInput.value = truncate(res.title, 120);
     state.autoTitle = ui.addTitleInput.value.trim();
   }
-  if (!ui.addMemo.value.trim() && res.desc) {
+  if (!droppedDupMemo && !ui.addMemo.value.trim() && res.desc) {
     ui.addMemo.value = truncate(oneLine(res.desc, 200), 200);
     state.autoMemo = ui.addMemo.value.trim();
     updateMemoCount();
