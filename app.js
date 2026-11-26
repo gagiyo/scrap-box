@@ -13,7 +13,7 @@ var BACKUP_VERSION = 2;
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '8';
+var SHELL_VERSION = '9';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -137,6 +137,21 @@ function domainOf(url) {
   }
 }
 
+/* 공유 글이 "… https://youtu.be/abc 입니다"처럼 주소 뒤에 조사·문장부호를 붙여 보내는 일이 잦다.
+   주소 끝에서 떼어 볼 꼬리표(문장부호 → 한글·전각문자 순서로 반복해 다듬는다). */
+var URL_TAIL_PUNCT = /[.,;:!?)\]}>'"”’»…]+$/;
+var URL_TAIL_NON_ASCII = /[^\x21-\x7e]+$/;
+
+function trimUrlTail(raw) {
+  var s = String(raw == null ? '' : raw);
+  for (var i = 0; i < 6; i++) {
+    var before = s;
+    s = s.replace(URL_TAIL_PUNCT, '').replace(URL_TAIL_NON_ASCII, '');
+    if (s === before) break;
+  }
+  return s;
+}
+
 function findUrl(text) {
   if (!text) return null;
   var s = String(text);
@@ -146,9 +161,38 @@ function findUrl(text) {
     if (m) m = [m[1]];
   }
   if (!m) return null;
-  var raw = m[0].replace(/[.,;:!?)\]}'"]+$/, '');
-  var n = normalizeUrl(raw);
-  return n.ok ? { url: n.url, domain: n.domain, raw: raw } : null;
+  var raw0 = m[0];
+  // 다듬은 후보를 먼저 본다: 안드로이드 공유 글의 "…/abc입니다" 같은 꼬리를 떼어 내기 위해서다.
+  var candidates = [trimUrlTail(raw0), raw0.replace(/[.,;:!?)\]}'"]+$/, '')];
+  for (var i = 0; i < candidates.length; i++) {
+    var raw = candidates[i];
+    if (!raw) continue;
+    var n = normalizeUrl(raw);
+    if (n.ok) return { url: n.url, domain: n.domain, raw: raw };
+  }
+  return null;
+}
+
+/** 본문에 섞여 온 주소를 모두 덜어 낸 나머지 글. */
+function stripUrlsFromText(text) {
+  return String(text == null ? '' : text)
+    .replace(/https?:\/\/[^\s<>"')\]]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 어떤 앱은 주소를 한 번 더 인코딩해 보낸다(https%3A%2F%2F…). 그때만 한 번 풀어 준다. */
+function decodeUrlParam(value) {
+  var s = String(value == null ? '' : value).trim();
+  if (!s) return '';
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/%[0-9a-f]{2}/i.test(s)) {
+    try {
+      var once = decodeURIComponent(s);
+      if (once !== s && /^https?:\/\//i.test(once)) return once;
+    } catch (e) { /* 그대로 쓴다 */ }
+  }
+  return s;
 }
 
 function detectType(text) {
@@ -168,7 +212,7 @@ function parseQueryParams(search) {
   var params;
   try { params = new URLSearchParams(q); } catch (e) { return null; }
 
-  var rawUrl = params.get('url') || params.get('u') || '';
+  var rawUrl = decodeUrlParam(params.get('url') || params.get('u') || '');
   var rawText = params.get('text') || params.get('t') || params.get('body') || params.get('memo') || '';
   var title = (params.get('title') || params.get('name') || '').trim();
   var folder = (params.get('folder') || params.get('f') || '').trim();
@@ -180,21 +224,40 @@ function parseQueryParams(search) {
 
   if (rawUrl) {
     var n = normalizeUrl(rawUrl);
-    if (n.ok) { out.url = n.url; out.type = 'link'; }
+    if (n.ok) {
+      out.url = n.url;
+      out.type = 'link';
+    } else {
+      var inUrl = findUrl(rawUrl); // 'example.com/x' 처럼 스킴 없이 온 주소
+      if (inUrl) { out.url = inUrl.url; out.type = 'link'; }
+    }
+  }
+
+  // 제목 칸에 주소가 섞여 오는 앱도 있다(제목이 "제목 https://…")
+  if (!out.url && title) {
+    var inTitle = findUrl(title);
+    if (inTitle) {
+      out.url = inTitle.url;
+      out.type = 'link';
+      title = stripUrlsFromText(title);
+      out.title = title;
+    }
   }
 
   if (rawText) {
-    var found = out.url ? null : findUrl(rawText);
-    if (found) {
-      out.url = found.url;
-      out.type = 'link';
-      var rest = String(rawText).replace(found.raw, ' ').replace(/\s+/g, ' ').trim();
-      if (rest) out.memo = rest;
-    } else if (!out.url) {
+    if (!out.url) {
+      var found = findUrl(rawText);
+      if (found) { out.url = found.url; out.type = 'link'; }
+    }
+    if (out.url) {
+      // 주소는 이미 링크 칸에 있으니 본문에서는 모두 덜어 내고, 제목과 겹치는 글도 버린다.
+      var memo = stripUrlsFromText(rawText);
+      if (memo && title && memo === title) memo = '';
+      if (memo && memo === out.url) memo = '';
+      if (memo) out.memo = memo;
+    } else {
       out.type = 'memo';
       out.memo = String(rawText).trim();
-    } else if (rawText.trim() && rawText.trim() !== out.url) {
-      out.memo = String(rawText).replace(rawUrl, ' ').replace(/\s+/g, ' ').trim();
     }
   }
 
@@ -914,6 +977,7 @@ function cacheUI() {
     'folderSheet', 'folderList', 'newFolderName', 'btnAddFolder', 'palette',
     'paletteEmojis', 'paletteColors', 'settingsSheet', 'themeSeg', 'viewSeg',
     'previewToggle', 'btnExport', 'btnExportLite', 'btnImport', 'importInput', 'statGrid', 'backupAge',
+    'proxyUrlInput', 'btnProxySave', 'proxyState',
     'previewNote', 'previewNoteDomain', 'previewNoteText',
     'confirmSheet', 'confirmTitle', 'confirmText', 'confirmActions', 'viewIcon'
   ].forEach(function (id) { ui[id] = document.getElementById(id); });
@@ -1703,6 +1767,101 @@ function schedulePreview() {
    · r.jina.ai — 원문을 막는 사이트(네이버 블로그 등)도 렌더링한 HTML을 준다(확인).
    · noembed.com — 일반 웹페이지는 지원하지 않아 마지막 안전망으로만 쓴다. */
 
+/* ------------------------------------------------ 자체 미리보기 프록시(Worker) */
+
+/* worker/ 폴더의 Cloudflare Worker를 배포한 뒤, 아래 한 줄에 그 주소를 넣으면
+   공개 무료 프록시보다 먼저 내 프록시로 제목·썸네일을 가져온다. 예:
+     var DEFAULT_PROXY_URL = 'https://scrap-box-preview.내계정.workers.dev';
+   주소는 설정 시트의 '미리보기 프록시' 칸이나 ?proxy=주소 로도 바꿀 수 있고,
+   그렇게 저장한 주소가 이 기본값보다 우선한다(비우면 공개 프록시만 쓴다). */
+var DEFAULT_PROXY_URL = '';
+var PREVIEW_PROXY_KEY = 'scrapbox_preview_proxy_v1';
+var previewProxyBlocked = '';
+var proxyQueryOverride = '';
+
+/** 프록시 주소를 다듬는다. 스킴이 없으면 https를 붙이고, 쓸 수 없는 값은 빈 문자열. */
+function normalizeProxyUrl(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  if (/^(off|none|사용안함)$/i.test(s)) return '';
+  if (!/^https?:\/\//i.test(s)) {
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}(?:[:/?#]|$)/i.test(s)) return '';
+    s = 'https://' + s;
+  }
+  try {
+    var u = new URL(s);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    if (!u.hostname) return '';
+    var href = u.href;
+    if (!u.search && !u.hash && href.slice(-1) === '/') href = href.slice(0, -1);
+    return href;
+  } catch (e) { return ''; }
+}
+
+function storedProxyUrl() {
+  try { return normalizeProxyUrl(localStorage.getItem(PREVIEW_PROXY_KEY) || ''); } catch (e) { return ''; }
+}
+
+/** 저장한 프록시 주소(빈 값이면 지운다). */
+function saveProxyUrl(raw) {
+  var n = normalizeProxyUrl(raw);
+  try {
+    if (n) localStorage.setItem(PREVIEW_PROXY_KEY, n);
+    else localStorage.removeItem(PREVIEW_PROXY_KEY);
+  } catch (e) { /* 저장 못 하면 이번 실행에서만 쓴다 */ }
+  return n;
+}
+
+/** 지금 쓸 프록시: 이번에 넘어온 ?proxy= → 저장해 둔 값 → 코드 기본값. */
+function previewProxyUrl() {
+  return normalizeProxyUrl(proxyQueryOverride) || storedProxyUrl() || normalizeProxyUrl(DEFAULT_PROXY_URL);
+}
+
+/** 프록시 주소에 대상 주소를 붙인다. {url} 자리표시자도 받아 준다. */
+function proxyEndpoint(proxy, target) {
+  var base = String(proxy == null ? '' : proxy);
+  if (!base) return '';
+  var t = encodeURIComponent(target);
+  if (base.indexOf('{url}') !== -1) return base.replace(/\{url\}/g, t);
+  if (/[?&]url=$/.test(base)) return base + t;
+  if (/^https?:\/\/[^/?#]+$/i.test(base)) return base + '/?url=' + t; // 경로 없는 주소
+  if (base.slice(-1) === '/') return base + '?url=' + t;
+  if (base.indexOf('?') === -1) return base + '?url=' + t;
+  return base + '&url=' + t;
+}
+
+/** Worker가 돌려준 JSON을 앱의 미리보기 모양으로 바꾼다. 쓸 수 없으면 null(다음 단계로). */
+function workerPreviewToResult(j, pageUrl) {
+  if (!j || typeof j !== 'object') return null;
+  if (j.blocked === true) {
+    // 차단은 다음 단계(jina 등)가 뚫어 줄 수도 있으니 기록만 하고 계속한다
+    previewProxyBlocked = String(j.reason || 'blocked-site');
+    return null;
+  }
+  if (j.ok !== true) return null;
+  var title = cleanPreviewTitle(j.title, j.siteName || '');
+  if (!title) return null;
+  // "YouTube"·"Instagram"처럼 사이트 이름만 돌려준 꼴뚜기 결과는 버리고 다음 단계로 넘긴다
+  var st = String(j.siteName || '').trim();
+  if (st && !j.description && !j.image && title.toLowerCase() === st.toLowerCase()) return null;
+  return {
+    title: title,
+    desc: j.description || '',
+    thumb: j.image || j.favicon || '',
+    site: j.siteName || ''
+  };
+}
+
+/** 자체 프록시 단계. 실패하면 runPreviewSteps가 다음 공개 프록시로 넘긴다. */
+function stepWorkerProxy(proxy, target) {
+  return {
+    label: 'worker',
+    timeout: 9000,
+    url: function () { return proxyEndpoint(proxy, target); },
+    parse: function (v) { return workerPreviewToResult(previewJson(v), target); }
+  };
+}
+
 var PREVIEW_BUDGET_MS = 18000;
 var PREVIEW_CACHE_KEY = 'scrapbox_preview_cache_v1';
 var PREVIEW_CACHE_TTL = 7 * 86400000;
@@ -1971,12 +2130,15 @@ function stepYouTubeOembed() {
 
 /** URL에 맞는 시도 순서. 각 단계는 스스로 시간을 끊고, 실패하면 다음 단계로 넘어간다. */
 function buildPreviewSteps(url) {
+  var steps = [];
+  var proxy = previewProxyUrl();
+  if (proxy) steps.push(stepWorkerProxy(proxy, url)); // 자체 프록시가 있으면 언제나 1순위
   if (PREVIEW_YT_RE.test(url)) {
     // 유튜브 oEmbed는 브라우저에서 가끔 응답이 멈춘다. 같은 내용을 주는 noembed를 먼저 두고
     // oEmbed·HTML 파싱을 뒤에 붙인다.
-    return [stepNoembed(), stepYouTubeOembed(), stepJinaHtml(), stepCorsEu(), stepMicrolink()];
+    return steps.concat([stepNoembed(), stepYouTubeOembed(), stepJinaHtml(), stepCorsEu(), stepMicrolink()]);
   }
-  return [stepCorsEu(), stepJinaHtml(), stepAllorigins(), stepCodetabs(), stepMicrolink(), stepNoembed()];
+  return steps.concat([stepCorsEu(), stepJinaHtml(), stepAllorigins(), stepCodetabs(), stepMicrolink(), stepNoembed()]);
 }
 
 function runPreviewSteps(steps, url, signal, deadline) {
@@ -2090,6 +2252,7 @@ function fetchPreviewInto(n) {
   var cached = readPreviewCache(url);
   if (cached) { applyPreviewToForm(cached, url); return; }
 
+  previewProxyBlocked = '';
   showPreview(null, true);
   var deadline = Date.now() + PREVIEW_BUDGET_MS;
 
@@ -2098,7 +2261,9 @@ function fetchPreviewInto(n) {
     if (!res) {
       hidePreview();
       showPreviewNote(url);
-      ui.previewHint.textContent = '제목은 비워 두면 주소에서 만들어요. 직접 적으면 더 찾기 쉬워요.';
+      ui.previewHint.textContent = previewProxyBlocked
+        ? '이 사이트가 미리보기를 막고 있어요. 제목·메모는 직접 적어 주세요.'
+        : '제목은 비워 두면 주소에서 만들어요. 직접 적으면 더 찾기 쉬워요.';
       return;
     }
     writePreviewCache(url, res);
@@ -2689,6 +2854,43 @@ function addFolderFromInput() {
 
 /* ---------------------------------------------------------------- settings */
 
+/** 설정 시트의 '미리보기 프록시' 칸에 지금 상태를 적는다. */
+function renderProxyState() {
+  if (!ui.proxyState) return;
+  var saved = storedProxyUrl();
+  var active = previewProxyUrl();
+  if (ui.proxyUrlInput) ui.proxyUrlInput.value = saved;
+  if (!active) {
+    ui.proxyState.textContent = '비워 두면 공개 무료 서비스로만 가져와요.';
+  } else if (saved) {
+    ui.proxyState.textContent = '이 주소를 먼저 써요: ' + active;
+  } else {
+    ui.proxyState.textContent = '앱에 넣어 둔 주소를 써요: ' + active;
+  }
+}
+
+/** ?proxy=주소 로 들어오면 그 주소를 저장하고 이번에 쓴다(?proxy=off 면 끈다). */
+function applyProxyFromQuery() {
+  var params;
+  try {
+    params = new URLSearchParams(String(window.location.search || '').replace(/^\?/, ''));
+  } catch (e) { return false; }
+  if (!params.has('proxy')) return false;
+  var raw = String(params.get('proxy') || '').trim();
+  if (!raw || /^(off|none|0|false|사용안함)$/i.test(raw)) {
+    saveProxyUrl('');
+    proxyQueryOverride = '';
+    renderProxyState();
+    toast('미리보기 프록시를 껐어요. 공개 서비스만 써요.');
+    return true;
+  }
+  var n = saveProxyUrl(raw);
+  proxyQueryOverride = n;
+  renderProxyState();
+  toast(n ? '미리보기 프록시를 저장했어요' : '프록시 주소를 알아보지 못했어요. https://… 꼴로 적어 주세요.');
+  return true;
+}
+
 function openSettings() {
   applyTheme();
   Array.prototype.forEach.call(ui.viewSeg.querySelectorAll('button'), function (b) {
@@ -2697,6 +2899,7 @@ function openSettings() {
     b.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   ui.previewToggle.setAttribute('aria-checked', settings.preview ? 'true' : 'false');
+  renderProxyState();
   renderStats();
   renderBackupAge();
   openSheet(ui.settingsSheet);
@@ -3448,6 +3651,32 @@ function wireEvents() {
     saveSettings({ preview: on });
     toast(on ? '링크 미리보기를 자동으로 가져와요' : '링크 미리보기를 껐어요');
   });
+
+  /* 미리보기 프록시 주소(직접 배포한 Cloudflare Worker) — 비우면 공개 서비스만 쓴다 */
+  if (ui.btnProxySave) {
+    ui.btnProxySave.addEventListener('click', function () {
+      var typed = ui.proxyUrlInput ? ui.proxyUrlInput.value : '';
+      var n = saveProxyUrl(typed);
+      proxyQueryOverride = '';
+      renderProxyState();
+      toast(n ? '미리보기 프록시를 저장했어요' : '프록시를 지웠어요. 공개 서비스만 써요.');
+    });
+  }
+  if (ui.proxyUrlInput) {
+    ui.proxyUrlInput.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (ui.btnProxySave) ui.btnProxySave.click();
+      else renderProxyState();
+    });
+    ui.proxyUrlInput.addEventListener('blur', function () {
+      var typed = String(ui.proxyUrlInput.value || '').trim();
+      if (typed && !normalizeProxyUrl(typed)) {
+        ui.proxyUrlInput.value = storedProxyUrl();
+        toast('https:// 로 시작하는 주소를 넣어 주세요');
+      }
+    });
+  }
   ui.btnExport.addEventListener('click', function () { exportBackup({ includeImages: true }); });
   if (ui.btnExportLite) ui.btnExportLite.addEventListener('click', function () { exportBackup({ includeImages: false }); });
   ui.btnImport.addEventListener('click', function () {
@@ -3590,6 +3819,7 @@ function boot() {
   loadSettings();
   applyTheme();
   wireEvents();
+  applyProxyFromQuery();
   registerServiceWorker();
 
   try {

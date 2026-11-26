@@ -1492,6 +1492,11 @@ textarea.input {
 .btn-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
 .btn-row .btn { flex: 1; min-width: 130px; }
 
+/* 설정: 미리보기 프록시 주소 입력 */
+.setting-block .input-row { margin-top: 2px; }
+.setting-block .input-row .btn { flex: none; height: auto; padding: 0 15px; }
+.setting-block .input-row .input { font-size: 13.5px; }
+
 .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
 .stat {
   padding: 11px 6px;
