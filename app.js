@@ -7,13 +7,13 @@
 'use strict';
 
 var APP_ID = 'scrap-box';
-var BACKUP_VERSION = 1;
+var BACKUP_VERSION = 2;
 
 /* 화면 껍데기(index.html)와 스크립트·스타일 버전이 어긋나면(서비스워커 캐시 등)
    섞인 화면이 뜬다. index.html이 이 값을 보고 버전을 맞추며, 다를 때는 캐시를 비우고
    한 번만 새로 불러온다(자가 복구). 버전을 올릴 때는 SHELL_VERSION과 index.html의
    data-shell·?v= 값·sw.js의 CACHE/SHELL을 함께 올린다. */
-var SHELL_VERSION = '7';
+var SHELL_VERSION = '8';
 if (typeof window !== 'undefined') window.SCRAPBOX_SHELL_VERSION = SHELL_VERSION;
 
 var TYPE_LABEL = { link: '링크', image: '이미지', memo: '메모' };
@@ -419,13 +419,18 @@ function cardMediaHTML(item, ctx) {
     return '<div class="card-memo">' + esc(oneLine(item.memo, 220)) + '</div>';
   }
   if (src) {
-    return '<div class="card-media media-shot"><img src="' + esc(src) + '" alt="" loading="lazy" decoding="async"></div>';
+    return '<div class="card-media media-shot"><img src="' + esc(src) + '" alt="" loading="lazy" decoding="async" onerror="this.parentNode.classList.add(\'tile\');this.remove()"></div>';
   }
   if (item.thumbnailUrl) {
     return '<div class="card-media"><img src="' + esc(item.thumbnailUrl) + '" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"' +
       ' onerror="this.parentNode.classList.add(\'tile\');this.parentNode.style.setProperty(\'--hue\',' + hueOf(item.domain || item.url) + ');this.remove()"></div>';
   }
-  var letter = item.type === 'image' ? '🖼' : (item.type === 'memo' ? '📝' : String(item.domain || domainOf(item.url) || 'link').replace(/^www\./, '').charAt(0));
+  // 사진을 빼고 만든 백업에서 복원한 이미지 항목 — 깨진 그림 대신 빈 자리를 보여 준다
+  if (item.type === 'image') {
+    return '<div class="card-media tile no-photo" style="--hue:' + hueOf(item.id || item.title || 'img') + '">' +
+      '<span class="tile-letter">🖼</span><span class="tile-note">이미지 없음</span></div>';
+  }
+  var letter = item.type === 'memo' ? '📝' : String(item.domain || domainOf(item.url) || 'link').replace(/^www\./, '').charAt(0);
   var hue = hueOf(item.domain || item.url || item.title || item.type);
   return '<div class="card-media tile" style="--hue:' + hue + '"><span class="tile-letter">' + esc(letter.toUpperCase()) + '</span></div>';
 }
@@ -622,7 +627,7 @@ function validateBackup(raw) {
       var n = normalizeUrl(it.url);
       url = n.ok ? n.url : '';
     }
-    if (!title && !memo && !url && !it.image) {
+    if (!title && !memo && !url && !it.image && it.type !== 'image') {
       warnings.push('빈 항목 ' + (i + 1) + '을(를) 건너뛰었어요.');
       return;
     }
@@ -661,11 +666,105 @@ function validateBackup(raw) {
   };
 }
 
+/**
+ * 불러올 백업이 어떤 파일인지 먼저 살핀다(앱 이름·버전·만든 날짜·사진 포함 여부).
+ * 다른 앱 파일이면 던지고, 스크랩박스 파일이면 요약과 함께 검사된 내용을 돌려준다.
+ * 옛(v1) 백업과 사진을 뺀 백업 모두 여기를 통과한다.
+ */
+function inspectBackup(raw) {
+  if (!raw || typeof raw !== 'object') throw new Error('JSON 형식이 아니에요.');
+  var app = typeof raw.app === 'string' ? raw.app : '';
+  if (app && app !== APP_ID) {
+    throw new Error('다른 앱(' + app + ')의 백업 파일이에요. 스크랩박스 백업(앱 이름 scrap-box)만 복원할 수 있어요.');
+  }
+
+  var payload = validateBackup(raw);
+  var version = num(raw.version, 0);
+  var exportedAt = typeof raw.exportedAt === 'string' ? raw.exportedAt : '';
+  var warnings = payload.warnings.slice();
+
+  var withImage = 0;
+  var withoutImage = 0;
+  var imageItems = 0;
+  payload.items.forEach(function (it) {
+    if (typeof it.image === 'string' && it.image.indexOf('data:') === 0) {
+      withImage++;
+    } else if (it.type === 'image') {
+      withoutImage++;
+    }
+    if (it.type === 'image') imageItems++;
+  });
+
+  if (!version) warnings.push('버전 표시가 없는 옛 형식 백업이에요. 읽을 수 있는 항목만 복원합니다.');
+  else if (version > BACKUP_VERSION) warnings.push('더 새 버전(v' + version + ')에서 만든 파일이라, 모르는 항목은 건너뜁니다.');
+  if (raw.imagesIncluded === false) warnings.push('이미지를 빼고 만든 백업이라, 이미지 항목은 “이미지 없음”으로 복원됩니다.');
+  else if (withoutImage) warnings.push('사진이 없는 이미지 항목 ' + withoutImage + '개는 “이미지 없음”으로 복원됩니다.');
+
+  var when = '';
+  if (exportedAt) {
+    var d = new Date(exportedAt);
+    if (!isNaN(d.getTime())) when = fullDate(d.getTime());
+  }
+
+  return {
+    app: app || APP_ID,
+    version: version,
+    exportedAt: exportedAt,
+    when: when,
+    itemCount: payload.items.length,
+    folderCount: payload.folders.length,
+    imageItems: imageItems,
+    withImage: withImage,
+    withoutImage: withoutImage,
+    warnings: warnings,
+    payload: payload
+  };
+}
+
+/** 마지막 백업이 언제였는지. 오래됐으면 새로 받으라고 일러준다. */
+function backupAgeText(lastAt, now) {
+  var t = num(lastAt, 0);
+  if (!t) return '아직 백업 파일을 만든 적이 없어요. 한 번 내려받아 두면 기기를 바꾸거나 저장소를 지워도 되살릴 수 있어요.';
+  var n = now || Date.now();
+  var days = Math.floor(Math.max(0, n - t) / 86400000);
+  if (days <= 0) return '오늘 백업했어요.';
+  if (days === 1) return '어제 백업했어요.';
+  if (days < 30) return days + '일 전에 백업했어요.';
+  if (days < 365) return Math.floor(days / 30) + '개월 전에 백업했어요. 새로 받아 두는 게 좋아요.';
+  return Math.floor(days / 365) + '년 전에 백업했어요. 새로 받아 두세요.';
+}
+
+/** 자동 미리보기가 막힌 사이트를 위한 안내. 빈 칸 대신 도메인과 이유를 보여 준다. */
+var BLOCKED_SITE_NOTES = [
+  { test: /(^|\.)coupang\.com$/, text: '쿠팡은 외부에서 미리보기를 막아 두었어요. 제목만 직접 적으면 링크는 그대로 담깁니다.' },
+  { test: /(^|\.)smartstore\.naver\.com$/, text: '스마트스토어는 미리보기를 막아 두었어요. 제목을 직접 적어 주세요.' },
+  { test: /(^|\.)naver\.com$/, text: '네이버는 페이지에 따라 미리보기를 막아 둡니다. 제목을 직접 적어 주세요.' },
+  { test: /(^|\.)instagram\.com$/, text: '인스타그램은 로그인 없이 미리보기를 주지 않아요. 제목을 직접 적어 주세요.' },
+  { test: /(^|\.)musinsa\.com$/, text: '무신사는 미리보기를 막는 경우가 많아요. 제목을 직접 적어 주세요.' },
+  { test: /(^|\.)11st\.co\.kr$/, text: '11번가는 미리보기를 막아 두었어요. 제목을 직접 적어 주세요.' }
+];
+
+function blockedNoticeFor(domain) {
+  var d = String(domain || '').replace(/^www\./i, '').trim();
+  var hit = null;
+  for (var i = 0; i < BLOCKED_SITE_NOTES.length; i++) {
+    if (BLOCKED_SITE_NOTES[i].test.test(d)) { hit = BLOCKED_SITE_NOTES[i]; break; }
+  }
+  return {
+    domain: d || '이 주소',
+    known: !!hit,
+    text: hit ? hit.text : '이 사이트는 미리보기(제목·사진)를 주지 않았어요. 제목만 직접 적으면 링크는 그대로 담깁니다.'
+  };
+}
+
 /* =============================================================================
    Part 2 / 저장소 · 상태 · 렌더링
    ============================================================================= */
 
 var DB_NAME = 'scrapbox_db';
+/* 저장소 구조는 v1 그대로다. 이미지를 뺀 백업을 복원해도 컬럼이 늘지 않기 때문에
+   버전을 올리지 않았다(버전을 올리면 다른 창을 열어 둔 사용자에게 onblocked가 난다).
+   앞으로 올릴 일이 있으면 이 onupgradeneeded처럼 store를 '더하기만' 하고 절대 지우지 않는다. */
 var DB_VERSION = 1;
 var LS_SETTINGS = 'scrapbox_settings_v1';
 
@@ -773,7 +872,7 @@ function thumbSrcFor(item) {
 
 /* ------------------------------------------------------------------ state */
 
-var settings = { theme: 'auto', view: 'card', preview: true };
+var settings = { theme: 'auto', view: 'card', preview: true, lastBackupAt: 0 };
 
 var state = {
   items: [],
@@ -814,7 +913,8 @@ function cacheUI() {
     'detailSheet', 'detailBody', 'btnFav', 'btnEdit', 'btnItemDelete',
     'folderSheet', 'folderList', 'newFolderName', 'btnAddFolder', 'palette',
     'paletteEmojis', 'paletteColors', 'settingsSheet', 'themeSeg', 'viewSeg',
-    'previewToggle', 'btnExport', 'btnImport', 'importInput', 'statGrid',
+    'previewToggle', 'btnExport', 'btnExportLite', 'btnImport', 'importInput', 'statGrid', 'backupAge',
+    'previewNote', 'previewNoteDomain', 'previewNoteText',
     'confirmSheet', 'confirmTitle', 'confirmText', 'confirmActions', 'viewIcon'
   ].forEach(function (id) { ui[id] = document.getElementById(id); });
 }
@@ -825,6 +925,7 @@ function loadSettings() {
     settings.theme = (s.theme === 'light' || s.theme === 'dark') ? s.theme : 'auto';
     settings.view = s.view === 'list' ? 'list' : 'card';
     settings.preview = s.preview !== false;
+    settings.lastBackupAt = num(s.lastBackupAt, 0);
   } catch (e) { /* 기본값 */ }
   state.view = settings.view;
 }
@@ -992,6 +1093,14 @@ function formatBytes(bytes) {
   if (b < 1024 * 1024) return Math.round(b / 1024) + 'KB';
   if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0) + 'MB';
   return (b / 1024 / 1024 / 1024).toFixed(1) + 'GB';
+}
+
+function renderBackupAge() {
+  if (!ui.backupAge) return;
+  var last = settings.lastBackupAt;
+  ui.backupAge.textContent = backupAgeText(last);
+  var days = last ? Math.floor((Date.now() - last) / 86400000) : -1;
+  ui.backupAge.classList.toggle('is-old', days >= 30 || days === -1);
 }
 
 /* --------------------------------------------------------------- feedback */
@@ -1188,6 +1297,7 @@ function resetAddForm() {
   ui.addFav.setAttribute('aria-checked', 'false');
   ui.titleLabel.innerHTML = '제목 <em>선택</em>';
   hidePreview();
+  hidePreviewNote();
   ui.previewHint.textContent = '주소를 붙여넣으면 제목·썸네일을 자동으로 채워요.';
   ui.imageHint.textContent = '큰 이미지는 가로 ' + MAX_IMAGE_WIDTH + 'px로 자동 줄여 저장해요.';
   ui.fileInput.value = '';
@@ -1536,6 +1646,20 @@ function hidePreview() {
   ui.previewDesc.textContent = '';
 }
 
+/* 미리보기를 못 가져왔을 때: 빈 칸 대신 도메인과 이유를 보여 준다(쿠팡 등 차단 쇼핑몰). */
+function showPreviewNote(urlOrDomain) {
+  if (!ui.previewNote) return;
+  var note = blockedNoticeFor(domainOf(urlOrDomain) || urlOrDomain);
+  ui.previewNote.hidden = false;
+  if (ui.previewNoteDomain) ui.previewNoteDomain.textContent = note.domain;
+  if (ui.previewNoteText) ui.previewNoteText.textContent = note.text;
+  if (ui.previewNote) ui.previewNote.classList.toggle('is-known', note.known);
+}
+
+function hidePreviewNote() {
+  if (ui.previewNote) ui.previewNote.hidden = true;
+}
+
 function showPreview(p, loading) {
   ui.previewCard.hidden = false;
   ui.previewThumb.className = 'preview-thumb' + (loading ? ' loading' : '');
@@ -1547,18 +1671,20 @@ function showPreview(p, loading) {
 function schedulePreview() {
   if (previewTimer) clearTimeout(previewTimer);
   var raw = ui.addUrl.value.trim();
-  if (!raw) { clearAutoFilled(); hidePreview(); return; }
+  if (!raw) { clearAutoFilled(); hidePreview(); hidePreviewNote(); return; }
   var n = normalizeUrl(raw);
-  if (!n.ok) { hidePreview(); return; }
+  if (!n.ok) { hidePreview(); hidePreviewNote(); return; }
   // 주소를 다른 링크로 바꿨으면, 앞 링크에서 자동으로 채운 제목·메모는 지운다
   // (사용자가 직접 고쳐 놓은 값은 건드리지 않는다)
   if (state.addPreviewFor && state.addPreviewFor !== n.url) clearAutoFilled();
   if (state.addPreviewFor === n.url && state.addPreview) {
     showPreview(state.addPreview);
+    hidePreviewNote();
     return;
   }
   if (!settings.preview) {
     ui.previewHint.textContent = '자동 미리보기가 꺼져 있어요. 설정에서 켤 수 있어요.';
+    hidePreviewNote();
     return;
   }
   ui.previewHint.textContent = '주소를 붙여넣으면 제목·썸네일을 자동으로 채워요.';
@@ -1941,6 +2067,7 @@ function applyPreviewToForm(res, url) {
   state.addPreview = res;
   state.addPreviewFor = url;
   showPreview(res);
+  hidePreviewNote();
   ui.previewHint.textContent = '제목·메모는 직접 고쳐도 돼요.';
   if (!ui.addTitleInput.value.trim() && res.title) {
     ui.addTitleInput.value = truncate(res.title, 120);
@@ -1970,7 +2097,8 @@ function fetchPreviewInto(n) {
     if (seq !== previewSeq) return; // 더 새로운 요청이 있으면 무시
     if (!res) {
       hidePreview();
-      ui.previewHint.textContent = '미리보기를 가져오지 못했어요. 제목을 직접 적어 주세요.';
+      showPreviewNote(url);
+      ui.previewHint.textContent = '제목은 비워 두면 주소에서 만들어요. 직접 적으면 더 찾기 쉬워요.';
       return;
     }
     writePreviewCache(url, res);
@@ -1978,7 +2106,8 @@ function fetchPreviewInto(n) {
   }).catch(function () {
     if (seq !== previewSeq) return;
     hidePreview();
-    ui.previewHint.textContent = '미리보기를 가져오지 못했어요. 제목을 직접 적어 주세요.';
+    showPreviewNote(url);
+    ui.previewHint.textContent = '제목은 비워 두면 주소에서 만들어요. 직접 적으면 더 찾기 쉬워요.';
   });
 }
 
@@ -2185,8 +2314,13 @@ function renderDetail(item) {
 
   if (item.type === 'image' && item.image) {
     html += '<div class="detail-media" id="detailMedia">' +
-      '<img id="detailImg" src="' + esc(blobUrl(item.image)) + '" alt="">' +
+      '<img id="detailImg" src="' + esc(blobUrl(item.image)) + '" alt="" onerror="this.parentNode.classList.add(\'is-empty\');this.remove()">' +
       '<span class="zoom-hint">두 번 탭하면 확대</span>' +
+      '</div>';
+  } else if (item.type === 'image') {
+    // 사진을 빼고 만든 백업에서 온 항목: 깨진 그림 대신 안내를 남긴다
+    html += '<div class="detail-media detail-media--empty">' +
+      '<span>이 스크랩에는 사진이 들어 있지 않아요.<br><small>사진을 빼고 만든 백업에서 복원하면 이렇게 보입니다. 편집에서 사진을 골라 다시 넣을 수 있어요.</small></span>' +
       '</div>';
   }
 
@@ -2214,7 +2348,7 @@ function renderDetail(item) {
     actions += actBtn('copy-link', '링크 복사', 'i-copy', 'ghost');
     actions += actBtn('copy-text', '내용 복사', 'i-note', 'ghost');
   } else if (item.type === 'image') {
-    actions += actBtn('download', '이미지 저장', 'i-download', 'primary span2');
+    actions += actBtn('download', item.image ? '이미지 저장' : '사진 다시 넣기', item.image ? 'i-download' : 'i-image', 'primary span2');
     actions += actBtn('copy-text', '내용 복사', 'i-copy', 'ghost');
     actions += actBtn('copy-fav', item.favorite ? '고정 해제' : '즐겨찾기', 'i-star', 'ghost');
   } else {
@@ -2564,6 +2698,7 @@ function openSettings() {
   });
   ui.previewToggle.setAttribute('aria-checked', settings.preview ? 'true' : 'false');
   renderStats();
+  renderBackupAge();
   openSheet(ui.settingsSheet);
 }
 
@@ -2612,17 +2747,34 @@ function dataURLToBlob(dataUrl) {
   }
 }
 
-function exportBackup() {
+/** 백업 파일 내용. 앱 이름·형식 버전·만든 날짜·사진 포함 여부를 함께 적는다. */
+function buildBackupPayload(parts) {
+  var o = parts || {};
+  return {
+    app: APP_ID,
+    version: BACKUP_VERSION,
+    appName: '스크랩박스',
+    exportedAt: (o.now || new Date()).toISOString(),
+    imagesIncluded: o.includeImages !== false,
+    folders: sortFolders(o.folders || []),
+    items: o.items || []
+  };
+}
+
+function exportBackup(opts) {
+  var o = opts || {};
+  var includeImages = o.includeImages !== false;
   if (!state.items.length) {
     toast('아직 내보낼 스크랩이 없어요');
     return;
   }
-  var btn = ui.btnExport;
+  var btn = includeImages ? ui.btnExport : ui.btnExportLite;
   if (btn) btn.disabled = true;
-  toast('백업 파일을 만드는 중…');
+  toast(includeImages ? '백업 파일을 만드는 중…' : '사진을 빼고 백업 파일을 만드는 중…');
 
   var outItems = [];
   var i = 0;
+  var imageCount = 0;
 
   function next() {
     if (i >= state.items.length) return done();
@@ -2634,13 +2786,14 @@ function exportBackup() {
       copy[k] = src[k];
     }
     var jobs = [];
-    if (src.image) {
+    if (includeImages && src.image) {
+      imageCount++;
       jobs.push(blobToDataURL(src.image).then(function (d) {
         copy.image = d;
         copy.imageMime = (src.mime || (src.image && src.image.type) || '');
       }));
     }
-    if (src.thumb) {
+    if (includeImages && src.thumb) {
       jobs.push(blobToDataURL(src.thumb).then(function (d) { copy.thumb = d; }));
     }
     return Promise.all(jobs).then(function () {
@@ -2650,19 +2803,23 @@ function exportBackup() {
   }
 
   function done() {
-    var payload = {
-      app: APP_ID,
-      version: BACKUP_VERSION,
-      appName: '스크랩박스',
-      exportedAt: new Date().toISOString(),
-      folders: sortFolders(state.folders),
+    var payload = buildBackupPayload({
+      includeImages: includeImages,
+      folders: state.folders,
       items: outItems
-    };
+    });
     var stamp = new Date();
     var ymd = stamp.getFullYear() + '-' + pad2(stamp.getMonth() + 1) + '-' + pad2(stamp.getDate());
-    downloadBlob('스크랩박스-백업-' + ymd + '.json', JSON.stringify(payload, null, 2), 'application/json');
+    var suffix = includeImages ? '' : '-이미지없음';
+    downloadBlob('스크랩박스-백업-' + ymd + suffix + '.json', JSON.stringify(payload, null, 2), 'application/json');
     if (btn) btn.disabled = false;
-    toast(state.items.length + '개 항목을 백업 파일로 내려받았어요');
+    saveSettings({ lastBackupAt: Date.now() });
+    renderBackupAge();
+    if (includeImages) {
+      toast(state.items.length + '개 항목을 백업 파일로 내려받았어요' + (imageCount ? ' (사진 ' + imageCount + '장 포함)' : ''));
+    } else {
+      toast(state.items.length + '개 항목을 사진 없이 내려받았어요' + (imageCount ? ' · 사진 ' + imageCount + '장은 빠졌어요' : '') + ' (파일이 가볍습니다)');
+    }
   }
 
   next();
@@ -2675,36 +2832,58 @@ function importBackupFile(file) {
   var reader = new FileReader();
   reader.onload = function () {
     var data;
+    var info;
     try {
       data = JSON.parse(String(reader.result || ''));
     } catch (e) {
       toast('JSON 파일을 읽지 못했어요. 백업 파일이 맞는지 확인해 주세요.');
       return;
     }
-    var payload;
     try {
-      payload = validateBackup(data);
+      info = inspectBackup(data);
     } catch (err) {
       toast(err.message || '백업 파일 형식이 아니에요');
       return;
     }
-    if (!payload.items.length) {
+    if (!info.itemCount) {
       toast('복원할 항목이 없어요');
       return;
     }
 
+    var lines = [];
+    lines.push((info.when ? info.when + '에 만든' : '날짜 표시가 없는') + ' 스크랩박스 백업이에요.' + (info.version ? ' (형식 v' + info.version + ')' : ''));
+    lines.push('항목 ' + info.itemCount + '개 · 폴더 ' + info.folderCount + '개');
+    if (info.imageItems) {
+      lines.push('이미지 항목 ' + info.imageItems + '개 중 사진이 든 것 ' + info.withImage + '개' +
+        (info.withoutImage ? ', 사진 없는 것 ' + info.withoutImage + '개' : ''));
+    }
+    if (info.warnings.length) lines.push('! ' + info.warnings.join('\n! '));
+    lines.push('지금 스크랩(' + state.items.length + '개)과 합칠까요? “전부 바꾸기”는 한 번 더 확인합니다.');
+
     askConfirm({
       title: '복원하기',
-      text: payload.items.length + '개 항목, ' + payload.folders.length + '개 폴더를 찾았어요. 기존 스크랩과 합칠까요, 아니면 이 백업으로 바꿀까요?' +
-        (payload.warnings.length ? '\n형식이 맞지 않는 항목 ' + payload.warnings.length + '개는 건너뜁니다.' : ''),
+      text: lines.join('\n'),
       actions: [
-        { label: '추가로 합치기', value: 'merge', style: 'primary' },
+        { label: '합치기', value: 'merge', style: 'primary' },
         { label: '전부 바꾸기', value: 'replace', style: 'danger' },
         { label: '취소', value: null, style: 'ghost' }
       ]
     }).then(function (mode) {
       if (!mode) return;
-      restoreBackup(payload, mode);
+      if (mode === 'merge') {
+        restoreBackup(info.payload, 'merge');
+        return;
+      }
+      askConfirm({
+        title: '정말 전부 바꿀까요?',
+        text: '지금 스크랩 ' + state.items.length + '개와 폴더 ' + state.folders.length + '개가 모두 지워지고, 이 백업 내용으로 바뀝니다.\n되돌릴 수 없어요. 지금 것을 남기려면 취소를 누르고 “합치기”를 골라 주세요.',
+        actions: [
+          { label: '전부 바꾸기', value: true, style: 'danger' },
+          { label: '취소', value: null, style: 'ghost' }
+        ]
+      }).then(function (yes) {
+        if (yes) restoreBackup(info.payload, 'replace');
+      });
     });
   };
   reader.onerror = function () { toast('파일을 읽지 못했어요'); };
@@ -3111,6 +3290,7 @@ function wireEvents() {
     state.addPreview = null;
     state.addPreviewFor = '';
     hidePreview();
+    hidePreviewNote();
   });
 
   ui.btnPickImage.addEventListener('click', function () { ui.fileInput.click(); });
@@ -3158,6 +3338,13 @@ function wireEvents() {
       toggleFavorite(item.id);
       renderDetail(findItem(item.id));
     } else if (act === 'download') {
+      if (!item.image) {
+        closeSheet(ui.detailSheet);
+        state.detailId = null;
+        openAdd({ item: item });
+        toast('편집에서 사진을 골라 다시 넣을 수 있어요');
+        return;
+      }
       downloadImage(item);
     } else if (act === 'move') {
       askMoveTarget([item.id]);
@@ -3261,7 +3448,8 @@ function wireEvents() {
     saveSettings({ preview: on });
     toast(on ? '링크 미리보기를 자동으로 가져와요' : '링크 미리보기를 껐어요');
   });
-  ui.btnExport.addEventListener('click', exportBackup);
+  ui.btnExport.addEventListener('click', function () { exportBackup({ includeImages: true }); });
+  if (ui.btnExportLite) ui.btnExportLite.addEventListener('click', function () { exportBackup({ includeImages: false }); });
   ui.btnImport.addEventListener('click', function () {
     ui.importInput.value = '';
     ui.importInput.click();

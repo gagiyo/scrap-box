@@ -1053,6 +1053,75 @@ textarea.input {
   white-space: nowrap;
 }
 
+/* 미리보기를 못 가져온 사이트 안내(쿠팡 등) — 빈 칸 대신 도메인과 이유를 보여 준다 */
+.preview-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  margin-bottom: 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+  animation: paneIn 0.2s ease;
+}
+.preview-note[hidden] { display: none; }
+.preview-note__badge {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 7px;
+  background: var(--surface-3);
+  color: var(--ink-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.preview-note.is-known .preview-note__badge { background: rgba(240, 71, 43, 0.12); color: #c03a1c; }
+.preview-note__body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.preview-note__body strong {
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-note__body span:last-child {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-3);
+  word-break: keep-all;
+}
+
+/* 사진을 빼고 만든 백업에서 온 항목 */
+.card-media.tile.no-photo .tile-letter { opacity: 0.55; }
+.card-media .tile-note {
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--ink-3);
+}
+.detail-media--empty {
+  background: var(--surface-2);
+  min-height: 180px;
+  padding: 22px 18px;
+  text-align: center;
+  touch-action: auto;
+}
+.detail-media--empty span {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  word-break: keep-all;
+}
+.detail-media--empty small { color: var(--ink-3); font-size: 11.5px; }
+.detail-media.is-empty { background: var(--surface-2); min-height: 120px; }
+
+/* 마지막 백업 경과일 */
+.backup-age { margin: 0 0 2px; font-weight: 650; color: var(--ink-2); }
+.backup-age.is-old { color: #c03a1c; }
+.backup-age.is-old::before { content: "⚠ "; }
+
 /* ---------- image picker ---------- */
 .dropzone {
   width: 100%;
@@ -1472,6 +1541,7 @@ textarea.input {
   color: var(--ink-2);
   margin: 0 2px 16px;
   word-break: keep-all;
+  white-space: pre-line;
 }
 .confirm-actions { display: flex; flex-direction: column; gap: 7px; max-height: 54vh; overflow-y: auto; }
 .confirm-panel { max-height: 88vh; max-height: 88dvh; }

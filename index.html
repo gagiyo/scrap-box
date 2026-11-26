@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko" data-theme="light" data-shell="7">
+<html lang="ko" data-theme="light" data-shell="8">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -17,7 +17,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="스크랩박스">
 <meta name="format-detection" content="telephone=no">
-<link rel="stylesheet" href="./styles.css?v=7">
+<link rel="stylesheet" href="./styles.css?v=8">
 <script>
 (function () {
   try {
@@ -188,6 +188,13 @@
             <svg class="ico"><use href="#i-close"/></svg>
           </button>
         </div>
+        <div class="preview-note" id="previewNote" hidden>
+          <span class="preview-note__badge">미리보기 없음</span>
+          <span class="preview-note__body">
+            <strong id="previewNoteDomain"></strong>
+            <span id="previewNoteText"></span>
+          </span>
+        </div>
         <p class="hint" id="previewHint">주소를 붙여넣으면 제목·썸네일을 자동으로 채워요.</p>
       </div>
 
@@ -339,15 +346,20 @@
       <div class="setting-block">
         <div class="setting-label">백업 / 복원</div>
         <p class="hint">이 기기 브라우저에만 저장돼요. JSON으로 내려받아 두면 기기를 바꿔도 그대로 복원할 수 있어요.</p>
+        <p class="hint backup-age" id="backupAge">아직 백업 파일을 만든 적이 없어요.</p>
         <div class="btn-row">
           <button type="button" class="btn ghost" id="btnExport">
-            <svg class="ico"><use href="#i-download"/></svg>백업 내려받기
+            <svg class="ico"><use href="#i-download"/></svg>이미지 포함 백업
+          </button>
+          <button type="button" class="btn ghost" id="btnExportLite">
+            <svg class="ico"><use href="#i-download"/></svg>이미지 빼고 백업
           </button>
           <button type="button" class="btn ghost" id="btnImport">
             <svg class="ico"><use href="#i-upload"/></svg>복원하기
           </button>
           <input type="file" id="importInput" accept="application/json,.json" hidden>
         </div>
+        <p class="hint">사진을 빼면 파일이 훨씬 가벼워요. 그 백업으로 복원하면 사진 자리는 “이미지 없음”으로 비워 둡니다.</p>
       </div>
 
       <div class="setting-block">
@@ -357,7 +369,7 @@
 
       <div class="setting-block">
         <div class="setting-label">단축어 · 공유 팁</div>
-        <p class="hint">iOS 단축어의 <strong>URL 열기</strong>에 <code>?url=주소</code> 또는 <code>?text=내용</code>을 붙여 열면, 담기 화면이 내용까지 채워진 채로 바로 열려요. 주소를 넣으면 링크로, 글을 넣으면 메모로 알아서 담아요.</p>
+        <p class="hint">안드로이드에서는 브라우저 메뉴의 <strong>공유</strong>에서 스크랩박스를 고르면 담기 화면이 바로 열려요. iOS 단축어에서는 <strong>URL 열기</strong>에 <code>?url=주소</code> 또는 <code>?text=내용</code>을 붙여 열면 돼요. 주소를 넣으면 링크로, 글을 넣으면 메모로 알아서 담아요.</p>
       </div>
 
       <div class="setting-block">
@@ -382,7 +394,7 @@
   </div>
 </section>
 
-<script src="./app.js?v=7"></script>
+<script src="./app.js?v=8"></script>
 <script>
 /* 껍데기 버전 자가 복구: 새 index.html에 옛 app.js(서비스워커 캐시)가 붙어
    버튼이 안 먹거나 두 번 뜨는 일을 막는다. 버전이 다르면 캐시를 비우고 한 번만 새로 연다. */
