@@ -157,8 +157,8 @@ var URL_TAIL_PARTICLES = [
 
 /* 주소를 덜어 내고 나면 조사만 남는 글("… https://youtu.be/abc 입니다")은 메모로 치지 않는다. */
 var MEMO_PARTICLE_ONLY = /^(?:이었습니다|였습니다|이랍니다|이에요|이네요|이죠|이요|네요|이라고|라고|이라|이다|입니다|예요|요)$/;
-/* 글자·숫자 없이 문장부호만 남은 메모("…/a/b)" → ")")도 메모로 치지 않는다. */
-var MEMO_HAS_WORD = /[0-9A-Za-z\u00c0-\uffff]/;
+/* 글자·숫자 없이 문장부호만 남은 메모("…/a/b)" → ")", "“( )”")도 메모로 치지 않는다. */
+var MEMO_HAS_WORD = /[0-9A-Za-z\u00c0-\u024f\uac00-\ud7a3\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\ud800-\udfff]/;
 
 /* 주소 끝의 조사 한 토막을 떼어 낸다. 주소 경로가 한글인 경우(…/wiki/서울)를 지키려고
    앞 글자가 영문·숫자일 때만 한 글자 조사(…/abc에)까지 떼고,
@@ -316,6 +316,11 @@ function parseQueryParams(search) {
       var memo = stripUrlsFromText(rawText);
       if (memo && title && sameLooseText(memo, title)) memo = '';
       if (memo && memo === out.url) memo = '';
+      // 스킴 없이 적힌 주소(example.com/x)가 메모로 남는 경우도 있다
+      if (memo && !/\s/.test(memo)) {
+        var memoUrl = normalizeUrl(memo);
+        if (memoUrl.ok && memoUrl.url === out.url) memo = '';
+      }
       // "…/abc 입니다"처럼 주소 뒤에 따로 떨어진 조사나 문장부호만 남는 경우는 메모로 치지 않는다
       if (memo && (MEMO_PARTICLE_ONLY.test(memo) || !MEMO_HAS_WORD.test(memo))) memo = '';
       if (memo) out.memo = memo;
